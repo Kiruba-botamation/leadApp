@@ -18,6 +18,12 @@ router.post('/login', (req, res) => {
     const redirectUrl = req.body.redirect || req.query.redirect || process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
     const encodedRedirect = encodeURIComponent(redirectUrl);
 
+    console.log('[SSO] POST /login');
+    console.log('  AUTH_SERVICE_URL:', authServiceUrl);
+    console.log('  FRONTEND_BASE_URL:', process.env.FRONTEND_BASE_URL);
+    console.log('  Redirect URL:', redirectUrl);
+    console.log('  Auth URL:', `${authServiceUrl}/login?redirect=${encodedRedirect}`);
+
     return res.json({
       success: true,
       message: 'Login initiated',
@@ -42,6 +48,11 @@ router.get('/callback', (req, res) => {
   try {
     const { token, redirect } = req.query;
 
+    console.log('[SSO] GET /callback');
+    console.log('  Token:', token ? 'present' : 'MISSING');
+    console.log('  Redirect param:', redirect);
+    console.log('  FRONTEND_BASE_URL:', process.env.FRONTEND_BASE_URL);
+
     if (!token) {
       return res.status(400).json({
         success: false,
@@ -59,6 +70,7 @@ router.get('/callback', (req, res) => {
 
     // Redirect to frontend or specified redirect URL
     const redirectUrl = redirect || process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+    console.log('  Final redirect URL:', redirectUrl);
     return res.redirect(decodeURIComponent(redirectUrl));
   } catch (error) {
     console.error('Callback error:', error);
