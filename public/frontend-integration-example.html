@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frontend SSO Integration Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+
+        .authenticated {
+            display: none;
+        }
+
+        .not-authenticated {
+            display: none;
+        }
+
+        pre {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+
+        button {
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        .user-info {
+            background: #d4edda;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loading">
+        <h2>Checking authentication...</h2>
+    </div>
+
+    <div id="authenticated" class="authenticated">
+        <h1>✅ Authenticated Dashboard</h1>
+        <div class="user-info">
+            <h3>User Information:</h3>
+            <pre id="userInfo"></pre>
+        </div>
+        <button onclick="testLeadsAPI()">Test Leads API</button>
+        <button onclick="logout()">Logout</button>
+        <h3>API Response:</h3>
+        <pre id="apiResponse">No requests yet</pre>
+    </div>
+
+    <div id="not-authenticated" class="not-authenticated">
+        <h1>❌ Not Authenticated</h1>
+        <p>You need to log in to access this application.</p>
+        <button onclick="initiateLogin()">Login with SSO</button>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8083';
+
+        // CHECK AUTHENTICATION ON PAGE LOAD
+        // This is the KEY to preventing redirect loops
+        window.addEventListener('DOMContentLoaded', async () => {
+            await checkAuthentication();
+        });
+
+        async function checkAuthentication() {
+            try {
+                console.log('Checking authentication...');
+
+                // CRITICAL: Use credentials: 'include' to send cookies
+                const response = await fetch(`${API_BASE}/api/sso/auth`, {
+                    method: 'GET',
+                    credentials: 'include', // THIS IS REQUIRED TO SEND COOKIES
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                console.log('Auth check response status:', response.status);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('User authenticated:', data);
+
+                    // Show authenticated content
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('authenticated').style.display = 'block';
+                    document.getElementById('userInfo').textContent = JSON.stringify(data, null, 2);
+                } else {
+                    const error = await response.json();
+                    console.log('Not authenticated:', error);
+
+                    // Show login button
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('not-authenticated').style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Auth check failed:', error);
+
+                // Show login button on error
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('not-authenticated').style.display = 'block';
+            }
+        }
+
+        async function initiateLogin() {
+            try {
+                // Get current URL for redirect after login
+                const redirectUrl = window.location.href;
+
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        redirect: redirectUrl
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.authUrl) {
+                    // Redirect to login page (mock or real)
+                    window.location.href = data.authUrl;
+                } else {
+                    alert('Login initiation failed: ' + data.message);
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                alert('Login failed: ' + error.message);
+            }
+        }
+
+        async function testLeadsAPI() {
+            try {
+                console.log('Testing leads API...');
+
+                const response = await fetch(`${API_BASE}/api/leads`, {
+                    method: 'GET',
+                    credentials: 'include', // ALWAYS include credentials
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+                document.getElementById('apiResponse').textContent = JSON.stringify(data, null, 2);
+                console.log('Leads API response:', data);
+            } catch (error) {
+                console.error('Leads API error:', error);
+                document.getElementById('apiResponse').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function logout() {
+            try {
+                await fetch(`${API_BASE}/api/auth/logout`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+
+                // Reload page to trigger auth check
+                window.location.reload();
+            } catch (error) {
+                console.error('Logout error:', error);
+            }
+        }
+    </script>
+
+    <hr>
+    <h2>Frontend Integration Code</h2>
+    <p><strong>Copy this pattern to your React/Vue/Angular app:</strong></p>
+
+    <h3>1. Check Auth on App Load</h3>
+    <pre>
+// React example
+useEffect(() => {
+  async function checkAuth() {
+    const response = await fetch('http://localhost:8083/api/sso/auth', {
+      credentials: 'include' // CRITICAL!
+    });
+    
+    if (response.ok) {
+      const user = await response.json();
+      setUser(user);
+      setAuthenticated(true);
+    } else {
+      // Redirect to login
+      initiateLogin();
+    }
+  }
+  
+  checkAuth();
+}, []);
+  </pre>
+
+    <h3>2. All API Calls Must Include Credentials</h3>
+    <pre>
+// CORRECT
+fetch('http://localhost:8083/api/leads', {
+  credentials: 'include' // Required for cookies
+})
+
+// WRONG - This won't send cookies
+fetch('http://localhost:8083/api/leads')
+  </pre>
+
+    <h3>3. Axios Configuration</h3>
+    <pre>
+// If using axios
+import axios from 'axios';
+
+const api = axios.create({
+  baseURL: 'http://localhost:8083',
+  withCredentials: true // Required for cookies
+});
+
+// Then use: api.get('/api/leads')
+  </pre>
+
+    <h3>4. Fix Redirect Loop</h3>
+    <pre>
+// Your frontend is probably doing this (WRONG):
+if (!user) {
+  window.location.href = 'http://localhost:3001/login'; // Loops!
+}
+
+// Should be (CORRECT):
+if (!user) {
+  // Initiate SSO login via backend
+  const res = await fetch('http://localhost:8083/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ redirect: window.location.href })
+  });
+  const data = await res.json();
+  window.location.href = data.authUrl; // Goes to SSO
+}
+  </pre>
+</body>
+
+</html>
