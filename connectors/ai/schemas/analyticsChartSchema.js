@@ -303,7 +303,7 @@ LAYOUT DEFAULTS:
   - showLegend: true
   - showDataLabels: true
   - barOrientation: "vertical" (default), use "horizontal" when category labels are long
-  - numberSplitCount: 4 (for number chart breakdowns)
+  - numberSplitCount: 0 (for number chart breakdowns, default is none)
 
 ════════════════════════════════════════════════════════
 CATEGORY SELECTION RULES
