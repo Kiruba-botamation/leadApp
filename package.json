@@ -19,6 +19,7 @@
   "license": "MIT",
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.985.0",
+    "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.6",
     "bullmq": "^5.73.0",
     "cookie-parser": "^1.4.7",
