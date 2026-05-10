@@ -1,4 +1,4 @@
-import { getAdminsFromDb as getAdminsFromDbService } from '../services/adminService.js';
+import { syncAdminsFromPlatform, getAdminsFromDb as getAdminsFromDbService } from '../services/adminService.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -47,7 +47,10 @@ export const getAdmins = async (req, res) => {
             return res.status(403).json({ success: false, message: 'Access denied: acctId does not match authenticated user' });
         }
 
+
+        await syncAdminsFromPlatform(acctId);
         const result = await getAdminsFromDbService(acctId, filters);
+
 
         return res.status(200).json({ success: true, ...result });
     } catch (error) {

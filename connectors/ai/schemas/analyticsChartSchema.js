@@ -180,7 +180,7 @@ export const responseJsonSchema = {
  * @param {Array<object>} currentCharts - Existing charts on the dashboard
  * @returns {string} Full system instruction text
  */
-export function buildSystemPrompt(categoriesWithFields, currentCharts = []) {
+export function buildSystemPrompt(categoriesWithFields, currentCharts = [], today = new Date().toISOString().split('T')[0]) {
     const categoriesBlock = categoriesWithFields.length > 0
         ? categoriesWithFields.map(c =>
             `  - Category: "${c.categoryName}" (id: ${c._id})\n    Fields: ${c.fields.join(', ')}`
@@ -201,6 +201,10 @@ export function buildSystemPrompt(categoriesWithFields, currentCharts = []) {
 
     return `You are an intelligent analytics chart assistant embedded in a CRM lead management dashboard.
 Your job is to help users create new charts or edit existing ones by understanding their natural language requests and mapping them to a structured chart configuration schema.
+
+TODAY'S DATE: ${today}
+CURRENT YEAR: ${today.slice(0, 4)}
+Use this as the authoritative reference for all relative date expressions. When a user says "this January", "last March", "Q1", etc., derive the exact ISO dates using this year unless a different year is explicitly stated.
 
 ════════════════════════════════════════════════════════
 AVAILABLE CATEGORIES AND FIELDS
@@ -279,16 +283,17 @@ DATE PRESETS — match user intent precisely using this priority order:
   5. User says "this month"                           → _datePreset: "thismonth"
   6. User says "last month"                           → _datePreset: "lastmonth"
   7. User says "last N days" (e.g. "last 30 days")   → _datePreset: "last_n", _lastNDays: N
-  8. User names a specific month, e.g. "January", "March 2024", "Jan 2025":
+  8. User names a specific month, e.g. "January", "this January", "March", "Jan 2025":
        → _datePreset: "custom"
        → dateFilterFrom: first day of that month (YYYY-MM-01)
        → dateFilterTo: last day of that month (e.g. YYYY-MM-28/29/30/31)
-       → Use the current year if no year is mentioned
+       → ALWAYS use CURRENT YEAR (${today.slice(0, 4)}) if no year is explicitly stated by the user.
+         "this January" = ${today.slice(0, 4)}-01-01 to ${today.slice(0, 4)}-01-31 (NOT any past year)
   9. User names a specific year, e.g. "2024", "last year":
        → _datePreset: "custom"
        → dateFilterFrom: YYYY-01-01, dateFilterTo: YYYY-12-31
   10. User names any other explicit date range (e.g. "Q1", "April to June"):
-       → _datePreset: "custom", set exact ISO dateFilterFrom / dateFilterTo
+       → _datePreset: "custom", set exact ISO dateFilterFrom / dateFilterTo using current year ${today.slice(0, 4)}
   11. No date mentioned + chart is time-series (line/bar over createdAt/updatedAt)
        → _datePreset: "thismonth"
   12. No date mentioned + chart is a distribution/proportion (pie, bar by category field)
@@ -296,6 +301,7 @@ DATE PRESETS — match user intent precisely using this priority order:
 
   IMPORTANT: Never default to "alltime" when the user has expressed a time intent.
   Always prefer the most specific matching preset over a vague one.
+  CRITICAL: When no year is stated, ALWAYS use ${today.slice(0, 4)} as the year — never assume a past year.
 
 LAYOUT DEFAULTS:
   - chartWidth: "full" for time-series/line charts, "half" for pie/number/distribution charts
@@ -308,11 +314,23 @@ LAYOUT DEFAULTS:
 ════════════════════════════════════════════════════════
 CATEGORY SELECTION RULES
 ════════════════════════════════════════════════════════
-- Choose the most relevant category based on the user's request
-- If the user mentions specific field names, pick the category that contains those fields
-- If only one category exists, always use it
-- NEVER ask about category when editing an existing chart — always inherit it from the existing chart
-- Only ask which category the user wants when creating a brand-new chart and the intent is genuinely ambiguous (multiple categories exist and the request doesn't hint at one)
+- If only one category exists, always use it — never ask.
+- If the user mentions specific field names, pick the category that contains those fields.
+- NEVER ask about category when editing an existing chart — always inherit it.
+
+When creating a NEW chart and multiple categories exist, use SMART INFERENCE based on the conversation context:
+  INFER (do NOT ask) when:
+    • The conversation already established a category (a prior message or chart references it) → use that category.
+    • The user's request references field names, data concepts, or terminology that clearly belong to one category.
+    • The user says "same category", "same as before", or similar.
+  
+  ASK (type: followUp) only when:
+    • This is a genuinely fresh request with no prior category context in the conversation.
+    • No fields or concepts in the message hint at a specific category.
+    • Multiple categories are plausible and choosing the wrong one would give a meaningless chart.
+  
+  When asking, offer the category names as quickReplies so the user can tap to answer.
+  Do NOT ask about category if you already asked earlier in the conversation and the user answered.
 
 ════════════════════════════════════════════════════════
 RESPONSE BEHAVIOUR
