@@ -5,6 +5,7 @@ import mongoConnector from './config/mongoConnector.js';
 import leadRoutes from './routes/leadRoutes.js';
 import ssoRoutes from './routes/ssoRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
+import aiAnalyticsRoutes from './routes/aiAnalyticsRoutes.js';
 import accountRoutes from './routes/accountRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import ssoAuthMiddleware from './middleware/ssoAuthMiddleware.js';
@@ -128,6 +129,7 @@ app.use('/api/leads', apiKeyAuthMiddleware, leadRateLimiter, leadRoutes);
 app.use('/api/ui/leads', ssoAuthMiddleware, leadRoutes);
 
 app.use('/api/ui/analytics', ssoAuthMiddleware, analyticsRoutes);
+app.use('/api/ui/analytics/ai', ssoAuthMiddleware, aiAnalyticsRoutes);
 
 // Health check route
 app.get('/health', async (req, res) => {

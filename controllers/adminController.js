@@ -52,6 +52,7 @@ export const getAdmins = async (req, res) => {
         await syncAdminsFromPlatform(acctId);
         const result = await getAdminsFromDbService(acctId, filters);
 
+
         return res.status(200).json({ success: true, ...result });
     } catch (error) {
         logger.error('Failed to sync and fetch admins', { error: error.message });
