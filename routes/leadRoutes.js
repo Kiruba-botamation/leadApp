@@ -1,65 +1,44 @@
 import express from 'express';
 import leadController from '../controllers/leadController.js';
+import categoryController from '../controllers/categoryController.js';
 
 const router = express.Router();
 
-/**
- * GET /api/leads/categories
- * @desc    Get all lead categories for the account
- * @access  Protected (requires authentication)
- */
-router.get('/categories', leadController.getCategories.bind(leadController));
+// ── Category management (SSO-only — mounted under /api/ui/leads) ─────────────
 
-/**
- * GET /api/leads/fields
- * @desc    Get all unique field names per category
- * @access  Protected (requires authentication)
- */
-router.get('/fields', leadController.getFields.bind(leadController));
+/** List all categories (lightweight — no field details) */
+router.get('/categories', categoryController.getCategories.bind(categoryController));
 
-/**
- * PUT /api/leads/categories/:categoryId/default
- * @desc    Set a category as the default
- * @access  Protected (requires authentication)
- */
-router.put('/categories/:categoryId/default', leadController.setDefaultCategory.bind(leadController));
+/** Get full column definitions for one category */
+router.get('/categories/:categoryId/fields', categoryController.getCategoryFields.bind(categoryController));
 
-/**
- * DELETE /api/leads/categories/:categoryId
- * @desc    Delete a category and all its associated leads
- * @access  Protected (requires authentication)
- */
-router.delete('/categories/:categoryId', leadController.deleteCategory.bind(leadController));
+/** Create a new category */
+router.post('/categories', categoryController.createCategory.bind(categoryController));
 
-/**
- * POST /api/leads          — create lead(s) with no category (uses default)
- * POST /api/leads/:category — create lead(s) under a named category
- * @desc    Create one or more leads; queued for API-key callers, synchronous for SSO callers
- * @access  Protected (requires authentication)
- */
-router.post('/', leadController.createLead.bind(leadController));
-router.post('/:category', leadController.createLead.bind(leadController));
+/** Update category name and/or column definitions */
+router.put('/categories/:categoryId', categoryController.updateCategory.bind(categoryController));
 
-/**
- * GET /api/leads
- * @desc    Get paginated leads with optional filtering and sorting
- * @access  Protected (requires authentication)
- * @query   page, limit, sortBy, sortOrder, search, acctId
- */
+/** Set a category as the account default */
+router.put('/categories/:categoryId/default', categoryController.setDefaultCategory.bind(categoryController));
+
+/** Delete a category and all its leads */
+router.delete('/categories/:categoryId', categoryController.deleteCategory.bind(categoryController));
+
+// ── Lead CRUD ────────────────────────────────────────────────────────────────
+
+/** Get paginated leads (with optional typed fieldFilters) */
 router.get('/', leadController.getAllLeads.bind(leadController));
 
-/**
- * PUT /api/leads/:id
- * @desc    Update a lead
- * @access  Protected (requires authentication)
- */
+/** Create lead(s) — no category (uses default) */
+router.post('/', leadController.createLead.bind(leadController));
+
+/** Create lead(s) under a named category */
+router.post('/:category', leadController.createLead.bind(leadController));
+
+/** Update a lead */
 router.put('/:id', leadController.updateLead.bind(leadController));
 
-/**
- * DELETE /api/leads/:id
- * @desc    Delete a lead
- * @access  Protected (requires authentication)
- */
+/** Delete a lead */
 router.delete('/:id', leadController.deleteLead.bind(leadController));
 
 export default router;

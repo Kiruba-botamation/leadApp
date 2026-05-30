@@ -6,7 +6,7 @@
  * ────────────────────────────────────────────────────────────────────────────
  */
 import { getAiProvider } from '../connectors/ai/index.js';
-import leadService from '../services/leadService.js';
+import categoryService from '../services/categoryService.js';
 
 class AiAnalyticsController {
     /**
@@ -52,13 +52,17 @@ class AiAnalyticsController {
             // ── Fetch categories with their fields ──────────────────────────
             let categoriesWithFields = [];
             try {
-                // getFieldsByCategory returns all categories with fields in a single query
-                const rawCategories = await leadService.getFieldsByCategory(acctId);
-                categoriesWithFields = rawCategories.map(cat => ({
-                    _id: String(cat.categoryId),
-                    categoryName: cat.categoryName,
-                    fields: cat.fields || [],
-                }));
+                const categoryList = await categoryService.getCategories(acctId);
+                categoriesWithFields = await Promise.all(
+                    categoryList.map(async cat => {
+                        const detail = await categoryService.getCategoryFields(acctId, String(cat._id));
+                        return {
+                            _id:          String(cat._id),
+                            categoryName: cat.categoryName,
+                            fields:       (detail.fields || []).filter(f => !f.system),
+                        };
+                    })
+                );
             } catch (fetchErr) {
                 // Non-fatal — AI can still help even without category context
                 console.error('[AiAnalytics] Failed to fetch categories:', fetchErr.message);

@@ -1,416 +1,281 @@
 import Lead from '../models/leadModel.js';
-import LeadCategory from '../models/leadCategoryModel.js';
-import Account from '../models/accountModel.js';
-import mongoose from 'mongoose';
-import {
-  performUpsert,
-  performGet,
-  performDelete,
-  performCount,
-  perfomDataExistanceCheck
-} from '../config/mongoConnector.js';
+import { performUpsert, performGet, performDelete, perfomDataExistanceCheck } from '../config/mongoConnector.js';
+import categoryService, { SYSTEM_FIELDS } from './categoryService.js';
+
+/** Fields that are internal / framework-managed and should never be treated as lead data */
+const INTERNAL_FIELDS = new Set(['_id', 'acctId', 'categoryId', '__v', 'createdAt', 'updatedAt', 'category']);
 
 class LeadService {
-  /**
-   * Create new lead(s)
-   * Resolves acctNo → acctId via Account collection before saving
-   */
-  async createLead(leadData, acctId, category = null, mergeProperties = null) {
-    try {
-      const categoryName = category || 'default';
+    /**
+     * Create one or more leads.
+     *
+     * Validation rules:
+     *  - The category must already exist in the DB.
+     *  - Every key in the payload must be a field defined in the category (system or user-defined).
+     *  - The "id" field is mandatory (system field).
+     *
+     * @param {object|object[]} leadData   — single lead object or array
+     * @param {string}          acctId
+     * @param {string|null}     category   — category name (uses default when null)
+     * @param {string[]|null}   mergeProperties
+     */
+    async createLead(leadData, acctId, category = null, mergeProperties = null) {
+        const categoryName = category || 'default';
 
-      const EXCLUDED_FIELDS = new Set(['_id', 'acctId', 'categoryId', '__v', 'createdAt', 'updatedAt', 'category']);
-      const extractFields = (item) => Object.keys(item).filter(k => !EXCLUDED_FIELDS.has(k));
+        // ── 1. Resolve & validate category ──────────────────────────────────
+        const categoryDoc = await categoryService.findByName(acctId, categoryName);
+        if (!categoryDoc) {
+            const err = new Error(`Category "${categoryName}" not found. Create it in Settings → Category before pushing data.`);
+            err.statusCode = 404;
+            throw err;
+        }
+        const categoryId = categoryDoc._id;
 
-      // Compute new fields from payload upfront — required before the category query so we can
-      // merge the $addToSet into the same round-trip as find-or-create (saves 1–2 DB calls).
-      const newFields = Array.isArray(leadData)
-        ? [...new Set(leadData.flatMap(extractFields))]
-        : extractFields(leadData);
+        // Build set of allowed field keys: system + user-defined
+        const allowedFields = new Set([
+            ...SYSTEM_FIELDS.map(f => f.field),
+            ...(categoryDoc.fields || []).map(f => f.field)
+        ]);
 
-      // Query 1 of 2 (was 3 of 4):
-      // Find-or-create category AND track field names — single round-trip.
-      // $setOnInsert fires only on new docs; $addToSet is a safe no-op if fields already exist.
-      const rawCatResult = await LeadCategory.findOneAndUpdate(
-        { acctId, categoryName },
-        {
-          $setOnInsert: { acctId, categoryName, default: false },
-          ...(newFields.length > 0 && { $addToSet: { fields: { $each: newFields } } })
-        },
-        { upsert: true, new: true, rawResult: true }
-      );
-
-      const categoryDoc = rawCatResult.value;
-      const categoryId = categoryDoc._id;
-
-      // If this was a brand-new category, async-check if it's the first for the account
-      // and mark it as default. Non-blocking — does not delay the lead insert response.
-      if (!rawCatResult.lastErrorObject?.updatedExisting) {
-        LeadCategory.countDocuments({ acctId })
-          .then(count => {
-            if (count === 1) {
-              return LeadCategory.updateOne({ _id: categoryId }, { $set: { default: true } });
+        // ── 2. Validate each item in the payload ────────────────────────────
+        const items = Array.isArray(leadData) ? leadData : [leadData];
+        for (const item of items) {
+            // Mandatory system field: "id"
+            if (!item.id && item.id !== 0) {
+                const err = new Error('Field "id" is required for all leads.');
+                err.statusCode = 400;
+                throw err;
             }
-          })
-          .catch(err => console.error('[LeadService] Failed to set default category:', err));
-      }
 
-      const addCategoryId = (item) => ({ ...item, categoryId });
-
-      // Build filter for merge-based upsert: scoped to acctId + specified merge fields
-      const buildMergeFilter = (item) => {
-        if (!mergeProperties?.length) return {};
-        const filter = { acctId };
-        let mergeFieldFound = false;
-        for (const prop of mergeProperties) {
-          if (prop in item) { filter[prop] = item[prop]; mergeFieldFound = true; }
+            // Reject unknown fields
+            const unknownFields = Object.keys(item).filter(k => !INTERNAL_FIELDS.has(k) && !allowedFields.has(k));
+            if (unknownFields.length > 0) {
+                const err = new Error(
+                    `Unknown field(s) for category "${categoryName}": ${unknownFields.join(', ')}. ` +
+                    `Define them in Settings → Category before using them.`
+                );
+                err.statusCode = 400;
+                throw err;
+            }
         }
-        // If none of the merge fields are present in the data, treat as a new insert
-        return mergeFieldFound ? filter : {};
-      };
 
-      // Query 2 of 2 (was 4 of 4): Insert lead(s)
-      let leadResult;
-      if (Array.isArray(leadData)) {
-        if (mergeProperties?.length) {
-          // Single bulkWrite round-trip for array + merge: one network call for all writes
-          const ops = leadData.map(item => {
-            const enriched = addCategoryId({ ...item, acctId });
-            return { updateOne: { filter: buildMergeFilter(item), update: { $set: enriched }, upsert: true } };
-          });
-          await Lead.bulkWrite(ops, { ordered: false });
-          // Re-fetch the upserted/updated docs via the same merge conditions
-          const mergeFilters = leadData.map(item => buildMergeFilter(item));
-          leadResult = await Lead.find({ $or: mergeFilters }).lean();
+        // ── 3. Insert lead(s) ───────────────────────────────────────────────
+        const addMeta = (item) => ({ ...item, acctId, categoryId });
+
+        const buildMergeFilter = (item) => {
+            if (!mergeProperties?.length) return {};
+            const filter = { acctId };
+            let found = false;
+            for (const prop of mergeProperties) {
+                if (prop in item) { filter[prop] = item[prop]; found = true; }
+            }
+            return found ? filter : {};
+        };
+
+        let leadResult;
+        if (Array.isArray(leadData)) {
+            if (mergeProperties?.length) {
+                const ops = leadData.map(item => {
+                    const enriched = addMeta({ ...item });
+                    return { updateOne: { filter: buildMergeFilter(item), update: { $set: enriched }, upsert: true } };
+                });
+                await Lead.bulkWrite(ops, { ordered: false });
+                const mergeFilters = leadData.map(item => buildMergeFilter(item));
+                leadResult = await Lead.find({ $or: mergeFilters }).lean();
+            } else {
+                const results = await Promise.all(
+                    leadData.map(item => performUpsert(Lead, {}, addMeta({ ...item })))
+                );
+                leadResult = results.map(r => r.doc);
+            }
         } else {
-          const results = await Promise.all(
-            leadData.map(item => performUpsert(Lead, {}, addCategoryId({ ...item, acctId })))
-          );
-          leadResult = results.map(r => r.doc);
+            const result = await performUpsert(Lead, buildMergeFilter(leadData), addMeta({ ...leadData }));
+            leadResult = result.doc;
         }
-      } else {
-        const result = await performUpsert(Lead, buildMergeFilter(leadData), addCategoryId({ ...leadData, acctId }));
-        leadResult = result.doc;
-      }
 
-      return { lead: leadResult, category: { data: categoryDoc } };
-    } catch (error) {
-      console.error('Error creating lead:', error);
-      throw error.statusCode ? error : new Error(`Failed to create lead: ${error.message}`);
+        return { lead: leadResult, categoryId };
     }
-  }
 
-  /**
-   * Get all leads with pagination and filtering
-   */
-  async getAllLeads(filters = {}) {
-    try {
-      const {
-        page = 1,
-        limit = 10,
-        sortBy = 'updatedAt',
-        sortOrder = -1,
-        search,
-        acctId,
-        categoryId,
-        ...rest
-      } = filters;
+    /**
+     * Get paginated leads.
+     *
+     * Filters are passed as a `fieldFilters` JSON string for typed filtering:
+     *   { fieldName: { type: 'text'|'number'|'date'|'boolean', value?, op?, min?, max?, from?, to? } }
+     *
+     * categoryFields is intentionally NOT returned here — the UI fetches column
+     * definitions separately via GET /categories/:id/fields.
+     */
+    async getAllLeads(filters = {}) {
+        const {
+            page = 1,
+            limit = 10,
+            sortBy = 'updatedAt',
+            sortOrder = -1,
+            search,
+            acctId,
+            categoryId,
+            fieldFilters: fieldFiltersRaw
+        } = filters;
 
-      // acctId is already validated by JWT middleware — no extra DB lookup needed
-      const query = { acctId };
+        const query = { acctId };
+        if (categoryId) query.categoryId = categoryId;
 
-      // Exact match for categoryId
-      if (categoryId) {
-        query.categoryId = categoryId;
-      }
+        // ── Parse and apply typed field filters ─────────────────────────────
+        if (fieldFiltersRaw) {
+            let parsed = {};
+            try { parsed = JSON.parse(fieldFiltersRaw); } catch { /* invalid JSON — ignore */ }
 
-      // Apply any extra field filters dynamically.
-      // Numeric values use exact match; strings use case-insensitive regex.
-      for (const [key, value] of Object.entries(rest)) {
-        if (value !== undefined && value !== null && value !== '') {
-          const numeric = Number(value);
-          query[key] = !isNaN(numeric) && value !== ''
-            ? numeric
-            : { $regex: value, $options: 'i' };
+            for (const [key, filterDef] of Object.entries(parsed)) {
+                if (!filterDef || INTERNAL_FIELDS.has(key)) continue;
+                const condition = this._buildFilterCondition(filterDef);
+                if (condition !== null) query[key] = condition;
+            }
         }
-      }
 
-      if (search) {
-        const searchableFields = Object.keys(Lead.schema.paths).filter(
-          k => Lead.schema.paths[k].instance === 'String' && !['_id', 'acctId', 'adminId'].includes(k)
-        );
-        const searchConditions = searchableFields.map(field => ({ [field]: { $regex: search, $options: 'i' } }));
-        // Keep acctId + categoryId scope, add search as $or across text fields
-        const scopeConditions = [{ acctId }];
-        if (query.categoryId) scopeConditions.push({ categoryId: query.categoryId });
-        query.$and = [...scopeConditions, { $or: searchConditions }];
-        delete query.acctId;
-        delete query.categoryId;
-      }
-      const skip = (page - 1) * limit;
-      const sort = { [sortBy]: sortOrder };
+        // ── Global text search across string fields ──────────────────────────
+        if (search) {
+            const scopeConditions = [{ acctId }];
+            if (categoryId) scopeConditions.push({ categoryId });
+            const stringFields = Object.keys(Lead.schema.paths).filter(
+                k => Lead.schema.paths[k].instance === 'String' && !['_id', 'acctId', 'adminId'].includes(k)
+            );
+            const searchConditions = stringFields.map(field => ({ [field]: { $regex: search, $options: 'i' } }));
+            query.$and = [...scopeConditions, { $or: searchConditions }];
+            delete query.acctId;
+            delete query.categoryId;
+        }
 
-      // Single aggregation — 1 query total.
-      // $facet runs 3 branches in one round-trip:
-      //   data          → sort + paginate + $lookup admin name/image
-      //   total         → count matched docs
-      //   categoryFields→ uncorrelated $lookup on leadcategories (only when categoryId given)
-      const pipeline = [
-        { $match: query },
-        {
-          $facet: {
-            data: [
-              { $sort: sort },
-              { $skip: skip },
-              { $limit: limit },
-              {
-                $lookup: {
-                  from: 'accountadmins',
-                  localField: 'adminId',
-                  foreignField: 'adminId',
-                  as: '_adminArr'
-                }
-              },
-              {
-                $addFields: {
-                  adminName: {
-                    $let: {
-                      vars: {
-                        fn: { $ifNull: [{ $arrayElemAt: ['$_adminArr.firstName', 0] }, ''] },
-                        ln: { $ifNull: [{ $arrayElemAt: ['$_adminArr.lastName', 0] }, ''] }
-                      },
-                      in: {
-                        $cond: {
-                          if: { $or: [{ $ne: ['$$fn', ''] }, { $ne: ['$$ln', ''] }] },
-                          then: { $trim: { input: { $concat: ['$$fn', ' ', '$$ln'] } } },
-                          else: null
-                        }
-                      }
-                    }
-                  },
-                  adminProfileImage: { $ifNull: [{ $arrayElemAt: ['$_adminArr.profileImage', 0] }, null] }
-                }
-              },
-              { $project: { _adminArr: 0 } }
-            ],
-            total: [{ $count: 'count' }],
-            ...(categoryId && {
-              categoryFields: [
-                { $limit: 1 },
-                {
-                  $lookup: {
-                    from: 'lead_categories',
-                    pipeline: [
-                      { $match: { _id: mongoose.Types.ObjectId.isValid(categoryId) ? new mongoose.Types.ObjectId(categoryId) : categoryId } },
-                      { $project: { _id: 0, fields: 1 } }
+        const skip = (page - 1) * limit;
+        const sort = { [sortBy]: sortOrder };
+
+        // Single $facet aggregation: data + total in one round-trip
+        const pipeline = [
+            { $match: query },
+            {
+                $facet: {
+                    data: [
+                        { $sort: sort },
+                        { $skip: skip },
+                        { $limit: limit },
+                        {
+                            $lookup: {
+                                from:         'accountadmins',
+                                localField:   'adminId',
+                                foreignField: 'adminId',
+                                as:           '_adminArr'
+                            }
+                        },
+                        {
+                            $addFields: {
+                                adminName: {
+                                    $let: {
+                                        vars: {
+                                            fn: { $ifNull: [{ $arrayElemAt: ['$_adminArr.firstName', 0] }, ''] },
+                                            ln: { $ifNull: [{ $arrayElemAt: ['$_adminArr.lastName', 0] }, ''] }
+                                        },
+                                        in: {
+                                            $cond: {
+                                                if:   { $or: [{ $ne: ['$$fn', ''] }, { $ne: ['$$ln', ''] }] },
+                                                then: { $trim: { input: { $concat: ['$$fn', ' ', '$$ln'] } } },
+                                                else: null
+                                            }
+                                        }
+                                    }
+                                },
+                                adminProfileImage: { $ifNull: [{ $arrayElemAt: ['$_adminArr.profileImage', 0] }, null] }
+                            }
+                        },
+                        { $project: { _adminArr: 0 } }
                     ],
-                    as: '_catDoc'
-                  }
-                },
-                {
-                  $project: {
-                    _id: 0,
-                    fields: { $ifNull: [{ $arrayElemAt: ['$_catDoc.fields', 0] }, []] }
-                  }
+                    total: [{ $count: 'count' }]
                 }
-              ]
-            })
-          }
+            }
+        ];
+
+        const [aggResult] = await Lead.aggregate(pipeline).option({ allowDiskUse: true });
+
+        return {
+            data: aggResult?.data ?? [],
+            pagination: {
+                total: aggResult?.total?.[0]?.count ?? 0,
+                page,
+                limit,
+                pages: Math.ceil((aggResult?.total?.[0]?.count ?? 0) / limit)
+            }
+        };
+    }
+
+    /** Get a single lead by _id */
+    async getLeadById(id) {
+        const result = await performGet(Lead, { _id: id });
+        return result?.data?.[0] || null;
+    }
+
+    /** Update a lead by _id */
+    async updateLead(id, updateData) {
+        const result = await performUpsert(Lead, { _id: id }, updateData);
+        return result.doc || null;
+    }
+
+    /** Delete a lead by _id */
+    async deleteLead(id) {
+        await performDelete(Lead, { _id: id });
+        return true;
+    }
+
+    // ── Private helpers ──────────────────────────────────────────────────────
+
+    /**
+     * Convert a typed filter definition to a MongoDB query condition.
+     * Returns null when there is no meaningful filter to apply.
+     */
+    _buildFilterCondition(filterDef) {
+        const { type, value, op, min, max, from, to } = filterDef;
+
+        switch (type) {
+            case 'text': {
+                if (!value && value !== 0) return null;
+                return { $regex: String(value), $options: 'i' };
+            }
+
+            case 'number': {
+                if (op === 'between') {
+                    const lo = parseFloat(min);
+                    const hi = parseFloat(max);
+                    if (isNaN(lo) && isNaN(hi)) return null;
+                    const cond = {};
+                    if (!isNaN(lo)) cond.$gte = lo;
+                    if (!isNaN(hi)) cond.$lte = hi;
+                    return cond;
+                }
+                const num = parseFloat(value);
+                if (isNaN(num)) return null;
+                const opMap = { eq: '$eq', ne: '$ne', gt: '$gt', gte: '$gte', lt: '$lt', lte: '$lte' };
+                const mongoOp = opMap[op] || '$eq';
+                return { [mongoOp]: num };
+            }
+
+            case 'date': {
+                const cond = {};
+                if (from) cond.$gte = new Date(from);
+                if (to) {
+                    // Include the full "to" day
+                    const toDate = new Date(to);
+                    toDate.setHours(23, 59, 59, 999);
+                    cond.$lte = toDate;
+                }
+                return Object.keys(cond).length > 0 ? cond : null;
+            }
+
+            case 'boolean': {
+                if (value === undefined || value === null || value === '') return null;
+                return value === true || value === 'true';
+            }
+
+            default:
+                return null;
         }
-      ];
-
-      // 1 query — everything resolved in a single aggregation round-trip
-      const [aggResult] = await Lead.aggregate(pipeline).option({ allowDiskUse: true });
-
-      const leads = aggResult?.data ?? [];
-      const total = aggResult?.total?.[0]?.count ?? 0;
-      let catFields = aggResult?.categoryFields?.[0]?.fields ?? [];
-
-      // If the category doc has no fields tracked yet, derive order from the first lead's
-      // key order (BSON insertion order) — excluding internal and aggregation-injected fields.
-      if (catFields.length === 0 && leads.length > 0) {
-        const EXCLUDE = new Set(['acctId', 'categoryId', '__v']);
-        catFields = Object.keys(leads[0]).filter(k => !EXCLUDE.has(k));
-      }
-
-      // Always ensure createdAt and updatedAt appear at the end (they are Mongoose timestamps,
-      // not stored in the category fields[] array). Strip first to avoid duplicates.
-      catFields = catFields.filter(f => f !== 'createdAt' && f !== 'updatedAt');
-      catFields = [...catFields, 'createdAt', 'updatedAt'];
-
-      return {
-        data: leads,
-        categoryFields: catFields,
-        pagination: {
-          total,
-          page,
-          limit,
-          pages: Math.ceil(total / limit)
-        }
-      };
-    } catch (error) {
-      console.error('Error getting leads:', error);
-      throw new Error(`Failed to get leads: ${error.message}`);
     }
-  }
-
-  /**
-   * Get a single lead by ID
-   */
-  async getLeadById(id) {
-    try {
-      const result = await performGet(Lead, { _id: id });
-      return result?.data?.[0] || null;
-    } catch (error) {
-      console.error('Error getting lead by id:', error);
-      throw new Error(`Failed to get lead: ${error.message}`);
-    }
-  }
-
-  /**
-   * Update lead
-   */
-  async updateLead(id, updateData) {
-    try {
-      const result = await performUpsert(Lead, { _id: id }, updateData);
-      return result.doc || null;
-    } catch (error) {
-      console.error('Error updating lead:', error);
-      throw new Error(`Failed to update lead: ${error.message}`);
-    }
-  }
-
-  /**
-   * Delete lead
-   */
-  async deleteLead(id) {
-    try {
-      await performDelete(Lead, { _id: id });
-      return true;
-    } catch (error) {
-      console.error('Error deleting lead:', error);
-      throw new Error(`Failed to delete lead: ${error.message}`);
-    }
-  }
-
-  /**
-   * Create a lead category if it doesn't already exist
-   * Sets default:true only when it is the first category for the account
-   */
-  async createCategory(acctNo, categoryName) {
-    try {
-      // Resolve acctNo → acctId
-      const account = await perfomDataExistanceCheck(Account, { acctNo });
-      if (!account) {
-        const err = new Error(`Account not found for acctNo: ${acctNo}`);
-        err.statusCode = 404;
-        throw err;
-      }
-      const acctId = account._id;
-
-      // Return existing category without creating a duplicate
-      const existing = await perfomDataExistanceCheck(LeadCategory, { acctId, categoryName });
-      if (existing) {
-        return { created: false, data: existing };
-      }
-
-      // Determine whether this is the first category for the account
-      const count = await performCount(LeadCategory, { acctId });
-      const isDefault = count === 0;
-
-      const category = await LeadCategory.create({ acctId, categoryName, default: isDefault });
-      return { created: true, data: category };
-    } catch (error) {
-      console.error('Error creating lead category:', error);
-      throw new Error(`Failed to create lead category: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get all categories for an account
-   */
-  async getCategories(acctId) {
-    try {
-      const result = await performGet(LeadCategory, { acctId }, [], { sort: { createdAt: 1 } });
-      return (result.data || []).map(c => ({ _id: c._id, categoryName: c.categoryName, default: c.default }));
-    } catch (error) {
-      console.error('Error getting lead categories:', error);
-      throw new Error(`Failed to get lead categories: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get all unique field names per category — reads directly from LeadCategory.fields.
-   * Fields are populated by: backfillFields.js script (one-time) + $addToSet on createLead (ongoing).
-   */
-  async getFieldsByCategory(acctId) {
-    try {
-      const categories = await LeadCategory.find({ acctId }).lean();
-      return categories.map(cat => ({
-        categoryId: cat._id,
-        categoryName: cat.categoryName,
-        default: cat.default,
-        fields: [...(cat.fields || []), 'createdAt', 'updatedAt']
-      }));
-    } catch (error) {
-      console.error('Error getting fields by category:', error);
-      throw new Error(`Failed to get fields: ${error.message}`);
-    }
-  }
-
-  /**
-   * Set a category as default — unsets all others for the account
-   */
-  async setDefaultCategory(acctId, categoryId) {
-    try {
-      const category = await perfomDataExistanceCheck(LeadCategory, { _id: categoryId, acctId });
-      if (!category) {
-        const err = new Error('Category not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      // Unset default on all categories for this account
-      await LeadCategory.updateMany({ acctId }, { $set: { default: false } });
-      // Set default on the target category
-      const updated = await LeadCategory.findByIdAndUpdate(categoryId, { $set: { default: true } }, { new: true });
-      return updated;
-    } catch (error) {
-      console.error('Error setting default category:', error);
-      throw error.statusCode ? error : new Error(`Failed to set default category: ${error.message}`);
-    }
-  }
-
-  /**
-   * Delete a category and all its associated leads.
-   * @param {string} acctId
-   * @param {string} categoryId
-   * @returns {{ deletedLeads: number, deletedCategory: boolean }}
-   */
-  async deleteCategory(acctId, categoryId) {
-    try {
-      const category = await LeadCategory.findOne({ _id: categoryId, acctId }).lean();
-      if (!category) {
-        const err = new Error('Category not found');
-        err.statusCode = 404;
-        throw err;
-      }
-
-      // Delete all leads belonging to this category
-      const leadsResult = await Lead.deleteMany({ acctId, categoryId });
-
-      // Delete the category itself
-      await LeadCategory.deleteOne({ _id: categoryId, acctId });
-
-      return {
-        deletedLeads: leadsResult.deletedCount,
-        deletedCategory: true,
-        categoryName: category.categoryName
-      };
-    } catch (error) {
-      console.error('Error deleting category:', error);
-      throw error.statusCode ? error : new Error(`Failed to delete category: ${error.message}`);
-    }
-  }
 }
 
 export default new LeadService();
