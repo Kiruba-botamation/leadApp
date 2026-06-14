@@ -37,7 +37,9 @@ class NoteController {
         try {
             const { leadId }    = req.params;
             const acctId        = req.query.acctId || req.headers['x-acctno'];
-            const adminId       = req.user?.accountAdminId;
+            // Prefer adminId sent explicitly by the frontend (account-specific _id from localStorage).
+            // Fall back to middleware-resolved accountAdminId (requires acctId to be accurate).
+            const adminId       = req.body.adminId || req.user?.accountAdminId;
             const { description } = req.body;
 
             if (!acctId)      return res.status(400).json({ success: false, message: 'Account context required' });

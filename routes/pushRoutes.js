@@ -25,7 +25,7 @@ router.delete('/fired/:reminderId', reminderController.dismissFired.bind(reminde
  */
 router.post('/subscribe', async (req, res) => {
     try {
-        const adminId = req.user?.accountAdminId;
+        const adminId = req.body.adminId || req.user?.accountAdminId;
         if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
 
         const { endpoint, keys } = req.body;
@@ -81,7 +81,10 @@ router.get('/vapid-public-key', (req, res) => {
  * The admin's browser opens this once and keeps it open.
  */
 router.get('/stream', (req, res) => {
-    const adminId = req.user?.accountAdminId;
+    // adminId is sent as a query param by the frontend (account_admins._id from localStorage).
+    // Falls back to middleware-resolved accountAdminId when available.
+    // acctId is also sent as a query param — used by middleware for the fallback lookup.
+    const adminId = req.query.adminId || req.user?.accountAdminId;
     if (!adminId) return res.status(401).json({ success: false, message: 'Authentication required' });
 
     // SSE headers

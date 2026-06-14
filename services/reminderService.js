@@ -13,16 +13,16 @@ import logger from '../utils/logger.js';
 
 class ReminderService {
     /**
-     * List reminders for a lead, visible only to the requesting admin.
+     * List all reminders for a lead — all admins can read all reminders.
+     * Write operations (create / update / delete) are still creator-only.
      * Returns reminders sorted by scheduledAt descending.
      *
      * @param {string} acctId
      * @param {string} leadId
-     * @param {string} adminId
      * @returns {Promise<object[]>}
      */
-    async getReminders(acctId, leadId, adminId) {
-        return LeadReminder.find({ acctId, leadId, adminId })
+    async getReminders(acctId, leadId) {
+        return LeadReminder.find({ acctId, leadId })
             .sort({ scheduledAt: -1 })
             .lean();
     }

@@ -23,11 +23,12 @@ class ReminderController {
         try {
             const { leadId } = req.params;
             const acctId     = req.query.acctId || req.headers['x-acctno'];
-            const adminId    = req.user?.accountAdminId;
 
-            if (!acctId || !adminId) return res.status(400).json({ success: false, message: 'Account context required' });
+            if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
 
-            const reminders = await reminderService.getReminders(acctId, leadId, adminId);
+            // All admins can see all reminders for a lead — no adminId filter here.
+            // adminId is only enforced on create / update / delete (creator-only writes).
+            const reminders = await reminderService.getReminders(acctId, leadId);
             return res.status(200).json({ success: true, data: reminders });
         } catch (err) {
             console.error('[ReminderController] getReminders:', err);
@@ -43,7 +44,9 @@ class ReminderController {
         try {
             const { leadId }           = req.params;
             const acctId               = req.query.acctId || req.headers['x-acctno'];
-            const adminId              = req.user?.accountAdminId;
+            // Prefer adminId sent explicitly by the frontend (account-specific _id from localStorage).
+            // Fall back to middleware-resolved accountAdminId (requires acctId to be accurate).
+            const adminId              = req.body.adminId || req.user?.accountAdminId;
             const {
                 description, scheduledAt,
                 preReminderEnabled, preReminderValue, preReminderUnit,
@@ -164,7 +167,7 @@ class ReminderController {
      */
     async getFiredReminders(req, res) {
         try {
-            const adminId = req.user?.accountAdminId;
+            const adminId = req.query.adminId || req.user?.accountAdminId;
             if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
 
             const page  = Math.max(1, parseInt(req.query.page,  10) || 1);
@@ -193,7 +196,7 @@ class ReminderController {
      */
     async markRead(req, res) {
         try {
-            const adminId            = req.user?.accountAdminId;
+            const adminId            = req.body.adminId || req.user?.accountAdminId;
             const { reminderIds }    = req.body;
 
             if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
@@ -213,7 +216,7 @@ class ReminderController {
     async dismissFired(req, res) {
         try {
             const { reminderId } = req.params;
-            const adminId        = req.user?.accountAdminId;
+            const adminId        = req.query.adminId || req.user?.accountAdminId;
             if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
 
             await reminderService.deleteFiredReminder(reminderId, adminId);
@@ -232,7 +235,7 @@ class ReminderController {
     async getBatchReminderCounts(req, res) {
         try {
             const acctId    = req.query.acctId || req.headers['x-acctno'];
-            const adminId   = req.user?.accountAdminId;
+            const adminId   = req.query.adminId || req.body.adminId || req.user?.accountAdminId;
             const { leadIds } = req.body;
 
             if (!acctId || !adminId) return res.status(400).json({ success: false, message: 'Account context required' });

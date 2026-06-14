@@ -8,16 +8,24 @@ const _adminIdCache = new Map();
 const ADMIN_ID_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Resolves the account_admins._id for the logged-in user by email lookup.
- * Sets user.accountAdminId — used as adminId in lead notes and reminders.
+ * Resolves the account_admins._id for the logged-in user.
+ * Sets user.accountAdminId — used as fallback adminId in lead notes and reminders.
+ *
+ * Requires acctId — without it we cannot safely identify which account_admins
+ * record belongs to this user (same email can exist in multiple accounts).
+ * When acctId is absent, accountAdminId is set to null and the caller must
+ * supply adminId directly in the request body.
  *
  * acctId is intentionally NOT stored on req.user — it always comes from
  * the request (query param / body / path param) so account switching works.
  */
-async function enrichWithAccountAdminId(user) {
-    if (!user?.email) return;
+async function enrichWithAccountAdminId(user, acctId) {
+    if (!user?.email || !acctId) {
+        user.accountAdminId = null;
+        return;
+    }
 
-    const key    = `${user.email}`;
+    const key    = `${user.email}:${acctId}`;
     const cached = _adminIdCache.get(key);
     if (cached && cached.exp > Date.now()) {
         user.accountAdminId = cached.id;
@@ -25,7 +33,7 @@ async function enrichWithAccountAdminId(user) {
     }
 
     try {
-        const rec = await AccountAdmin.findOne({ email: user.email }, { _id: 1 }).lean();
+        const rec = await AccountAdmin.findOne({ email: user.email, acctId }, { _id: 1 }).lean();
         const id  = rec?._id ?? null;
         _adminIdCache.set(key, { id, exp: Date.now() + ADMIN_ID_CACHE_TTL });
         user.accountAdminId = id;
@@ -103,7 +111,8 @@ const ssoAuthMiddleware = async (req, res, next) => {
     const skipUser = getSkipLoginUser();
     if (skipUser) {
         req.user = skipUser;
-        await enrichWithAccountAdminId(req.user);
+        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
+        await enrichWithAccountAdminId(req.user, acctId);
         return next();
     }
 
@@ -139,17 +148,18 @@ const ssoAuthMiddleware = async (req, res, next) => {
                 console.log('[SSO] Access token valid for %s — proceeding', decoded.email);
 
                 // Set user information in request
-                req.user = {
-                    userId: decoded.userId,
-                    email:  decoded.email,
-                    role:   decoded.role,
-                    permissions: decoded.permissions || [],
-                };
+        req.user = {
+            userId: decoded.userId,
+            email:  decoded.email,
+            role:   decoded.role,
+            permissions: decoded.permissions || [],
+        };
 
-                await enrichWithAccountAdminId(req.user);
-                return next();
-            } catch (error) {
-                console.log('[SSO] Access token invalid (%s) — trying refresh', error.message);
+        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
+        await enrichWithAccountAdminId(req.user, acctId);
+        return next();
+    } catch (error) {
+        console.log('[SSO] Access token invalid (%s) — trying refresh', error.message);
                 if (error.name === 'TokenExpiredError' || refreshToken) {
                     return await tryRefreshToken(req, res, next, refreshToken);
                 }
@@ -219,7 +229,8 @@ async function tryRefreshToken(req, res, next, refreshToken) {
             permissions: decoded.permissions || [],
         };
 
-        await enrichWithAccountAdminId(req.user);
+        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
+        await enrichWithAccountAdminId(req.user, acctId);
         return next();
     } catch (error) {
         console.error('[SSO] Refresh failed:', error.message);
@@ -276,7 +287,8 @@ export const hybridAuthMiddleware = async (req, res, next) => {
     const skipUser = getSkipLoginUser();
     if (skipUser) {
         req.user = skipUser;
-        await enrichWithAccountAdminId(req.user);
+        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
+        await enrichWithAccountAdminId(req.user, acctId);
         return next();
     }
 
@@ -292,7 +304,8 @@ export const hybridAuthMiddleware = async (req, res, next) => {
                 role:   decoded.role,
                 permissions: decoded.permissions || [],
             };
-            await enrichWithAccountAdminId(req.user);
+            const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
+            await enrichWithAccountAdminId(req.user, acctId);
             return next();
         } catch (err) {
             // Fall through to cookie-based auth
