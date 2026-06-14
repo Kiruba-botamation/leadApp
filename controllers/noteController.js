@@ -64,7 +64,7 @@ class NoteController {
     async updateNote(req, res) {
         try {
             const { noteId }    = req.params;
-            const adminId       = req.user?.accountAdminId;
+            const adminId       = req.body.adminId || req.user?.accountAdminId;
             const { description } = req.body;
 
             if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
@@ -91,7 +91,7 @@ class NoteController {
     async deleteNote(req, res) {
         try {
             const { noteId } = req.params;
-            const adminId    = req.user?.accountAdminId;
+            const adminId    = req.body.adminId || req.user?.accountAdminId;
 
             if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
 
