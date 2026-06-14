@@ -159,9 +159,9 @@ class LeadService {
                         { $limit: limit },
                         {
                             $lookup: {
-                                from:         'accountadmins',
+                                from:         'account_admins',
                                 localField:   'adminId',
-                                foreignField: 'adminId',
+                                foreignField: 'chatbotAdminId',
                                 as:           '_adminArr'
                             }
                         },

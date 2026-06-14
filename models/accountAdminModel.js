@@ -11,7 +11,7 @@ const accountAdminSchema = new mongoose.Schema(
             required: true,
             trim: true
         },
-        adminId: {
+        chatbotAdminId: {
             type: String,
             default: null
         },
@@ -40,10 +40,10 @@ const accountAdminSchema = new mongoose.Schema(
 );
 
 // Compound index for admin upsert filter and admin list queries (acctId prefix covers single-field acctId queries too)
-accountAdminSchema.index({ acctId: 1, adminId: 1 });
+accountAdminSchema.index({ acctId: 1, chatbotAdminId: 1 });
 
-// Index for lead enrichment — find admins by adminId $in after every paginated lead list
-accountAdminSchema.index({ adminId: 1 });
+// Index for lead enrichment — find admins by chatbotAdminId $in after every paginated lead list
+accountAdminSchema.index({ chatbotAdminId: 1 });
 
 const AccountAdmin = mongoose.model('AccountAdmin', accountAdminSchema);
 

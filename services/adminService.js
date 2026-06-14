@@ -42,7 +42,7 @@ export const syncAdminsFromPlatform = async (acctId) => {
     // ─────────────────────────────────────────────────────────────────
 
     const normalised = adminList.map((a) => ({
-        adminId: a.adminId ?? a.id ?? a._id ?? null,
+        chatbotAdminId: a.adminId ?? a.id ?? a._id ?? null,
         firstName: a.firstName ?? a.first_name ?? null,
         lastName: a.lastName ?? a.last_name ?? null,
         phone: a.phone ?? a.mobile ?? null,
@@ -55,20 +55,20 @@ export const syncAdminsFromPlatform = async (acctId) => {
     // Upsert each admin returned by Botamation — scoped by acctId
     await Promise.all(
         normalised.map((admin) => {
-            const filter = admin.adminId
-                ? { acctId, adminId: admin.adminId }
+            const filter = admin.chatbotAdminId
+                ? { acctId, chatbotAdminId: admin.chatbotAdminId }
                 : { acctId, email: admin.email };
             return performUpsert(AccountAdmin, filter, { ...admin, acctId });
         })
     );
 
     // Remove admins no longer in the Botamation response
-    const activeAdminIds = normalised.map((a) => a.adminId).filter(Boolean);
+    const activeChatbotAdminIds = normalised.map((a) => a.chatbotAdminId).filter(Boolean);
     const activeEmails = normalised.map((a) => a.email).filter(Boolean);
     const deleteResult = await performDelete(AccountAdmin, {
         acctId,
         $nor: [
-            { adminId: { $in: activeAdminIds } },
+            { chatbotAdminId: { $in: activeChatbotAdminIds } },
             { email: { $in: activeEmails } }
         ]
     });

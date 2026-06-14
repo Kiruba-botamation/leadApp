@@ -21,8 +21,8 @@ class AiAnalyticsController {
         try {
             const { message, history = [], acctId: bodyAcctId, currentCharts = [] } = req.body;
 
-            // Resolve acctId from SSO context or body
-            const acctId = req.user?.acctId || req.acctId || bodyAcctId;
+            // acctId always comes from the request (body/query) — never from req.user
+            const acctId = bodyAcctId || req.query.acctId || req.headers['x-acctno'] || req.acctId;
 
             // ── Input validation ────────────────────────────────────────────
             if (!acctId) {

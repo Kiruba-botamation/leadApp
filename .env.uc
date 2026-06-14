@@ -32,3 +32,9 @@ LEAD_QUEUE_FAILED_AGE_S=86400
 LEAD_RATE_LIMIT_MAX=100
 LEAD_RATE_LIMIT_WINDOW_S=60
 LEAD_RATE_LIMIT_FAIL_OPEN=true
+
+# ── Browser Push (VAPID) ──────────────────────────────────────
+# Generated once — do NOT rotate unless you want all browser subscriptions to break.
+VAPID_PUBLIC_KEY=BBshYZwqCIzHInLwkhwt9cpgrLBeNFfr2hDlg1L9YF1GWKd3ZmWMDDLfco7Mg906JoZaur96odhpKUEAcorktRw
+VAPID_PRIVATE_KEY=RpE0YQXE8eJECnbHAyhU6OLlHBxci-zZt921EmK-9mU
+VAPID_MAILTO=mailto:admin@urbanchat.in

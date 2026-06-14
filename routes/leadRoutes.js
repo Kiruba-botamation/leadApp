@@ -29,6 +29,9 @@ router.delete('/categories/:categoryId', categoryController.deleteCategory.bind(
 /** Get paginated leads (with optional typed fieldFilters) */
 router.get('/', leadController.getAllLeads.bind(leadController));
 
+/** Get a single lead by ID — must come after static routes */
+router.get('/:id', leadController.getLeadById.bind(leadController));
+
 /** Create lead(s) — no category (uses default) */
 router.post('/', leadController.createLead.bind(leadController));
 

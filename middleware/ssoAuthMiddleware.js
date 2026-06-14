@@ -1,5 +1,39 @@
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
+import AccountAdmin from '../models/accountAdminModel.js';
+
+// ── In-memory cache: 'email:acctId' → { id, exp } ───────────────────────────
+// Avoids a DB round-trip on every request while keeping identity fresh.
+const _adminIdCache = new Map();
+const ADMIN_ID_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Resolves the account_admins._id for the logged-in user by email lookup.
+ * Sets user.accountAdminId — used as adminId in lead notes and reminders.
+ *
+ * acctId is intentionally NOT stored on req.user — it always comes from
+ * the request (query param / body / path param) so account switching works.
+ */
+async function enrichWithAccountAdminId(user) {
+    if (!user?.email) return;
+
+    const key    = `${user.email}`;
+    const cached = _adminIdCache.get(key);
+    if (cached && cached.exp > Date.now()) {
+        user.accountAdminId = cached.id;
+        return;
+    }
+
+    try {
+        const rec = await AccountAdmin.findOne({ email: user.email }, { _id: 1 }).lean();
+        const id  = rec?._id ?? null;
+        _adminIdCache.set(key, { id, exp: Date.now() + ADMIN_ID_CACHE_TTL });
+        user.accountAdminId = id;
+    } catch (err) {
+        console.warn('[SSO] enrichWithAccountAdminId error:', err.message);
+        user.accountAdminId = null;
+    }
+}
 
 /**
  * Check if authentication should be skipped for local development.
@@ -69,6 +103,7 @@ const ssoAuthMiddleware = async (req, res, next) => {
     const skipUser = getSkipLoginUser();
     if (skipUser) {
         req.user = skipUser;
+        await enrichWithAccountAdminId(req.user);
         return next();
     }
 
@@ -106,13 +141,12 @@ const ssoAuthMiddleware = async (req, res, next) => {
                 // Set user information in request
                 req.user = {
                     userId: decoded.userId,
-                    email: decoded.email,
-                    acctId: decoded.acctId,
-                    acctNo: decoded.acctNo,
-                    role: decoded.role,
-                    permissions: decoded.permissions || []
+                    email:  decoded.email,
+                    role:   decoded.role,
+                    permissions: decoded.permissions || [],
                 };
 
+                await enrichWithAccountAdminId(req.user);
                 return next();
             } catch (error) {
                 console.log('[SSO] Access token invalid (%s) — trying refresh', error.message);
@@ -158,11 +192,9 @@ async function tryRefreshToken(req, res, next, refreshToken) {
         // Generate new access token (6 hours)
         const tokenPayload = {
             userId: decoded.userId,
-            email: decoded.email,
-            acctId: decoded.acctId,
-            acctNo: decoded.acctNo,
-            role: decoded.role,
-            permissions: decoded.permissions
+            email:  decoded.email,
+            role:   decoded.role,
+            permissions: decoded.permissions,
         };
         const newAccessToken = jwt.sign(tokenPayload, process.env.JWT_SECRET, { expiresIn: '6h' });
 
@@ -182,13 +214,12 @@ async function tryRefreshToken(req, res, next, refreshToken) {
         // Set user information in request
         req.user = {
             userId: decoded.userId,
-            email: decoded.email,
-            acctId: decoded.acctId,
-            acctNo: decoded.acctNo,
-            role: decoded.role,
-            permissions: decoded.permissions || []
+            email:  decoded.email,
+            role:   decoded.role,
+            permissions: decoded.permissions || [],
         };
 
+        await enrichWithAccountAdminId(req.user);
         return next();
     } catch (error) {
         console.error('[SSO] Refresh failed:', error.message);
@@ -245,6 +276,7 @@ export const hybridAuthMiddleware = async (req, res, next) => {
     const skipUser = getSkipLoginUser();
     if (skipUser) {
         req.user = skipUser;
+        await enrichWithAccountAdminId(req.user);
         return next();
     }
 
@@ -256,12 +288,11 @@ export const hybridAuthMiddleware = async (req, res, next) => {
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             req.user = {
                 userId: decoded.userId,
-                email: decoded.email,
-                acctId: decoded.acctId,
-                acctNo: decoded.acctNo,
-                role: decoded.role,
-                permissions: decoded.permissions || []
+                email:  decoded.email,
+                role:   decoded.role,
+                permissions: decoded.permissions || [],
             };
+            await enrichWithAccountAdminId(req.user);
             return next();
         } catch (err) {
             // Fall through to cookie-based auth

@@ -7,7 +7,7 @@ import categoryService from '../services/categoryService.js';
 class CategoryController {
     /** Shared helper: resolve acctId from request */
     _resolveAcctId(req) {
-        return req.user?.acctId || req.acctId || req.query.acctId || req.headers['x-acctno'];
+        return req.query.acctId || req.headers['x-acctno'] || req.acctId || null;
     }
 
     /**

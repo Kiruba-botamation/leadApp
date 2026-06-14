@@ -9,17 +9,12 @@ const withTimeout = (promise, ms, message) =>
     Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
 
 class LeadController {
-    /** Resolve the caller's acctId from the request (SSO or API key). */
+    /** Resolve the caller's acctId from the request.
+     * acctId is never stored on req.user — it always comes from the request
+     * so that account switching in the UI always works correctly.
+     */
     async _resolveAcctId(req) {
-        let acctId = req.user?.acctId || req.acctId;
-        if (!acctId) {
-            const candidate = req.query.acctId || req.body?.acctId;
-            if (candidate && req.user?.userId) {
-                const linked = await perfomDataExistanceCheck(UserAccount, { userId: req.user.userId, acctId: candidate });
-                if (linked) acctId = candidate;
-            }
-        }
-        return acctId;
+        return req.query.acctId || req.body?.acctId || req.headers['x-acctno'] || req.acctId || null;
     }
 
     /**
@@ -100,7 +95,7 @@ class LeadController {
                 fieldFilters
             } = req.query;
 
-            const acctId = req.user?.acctId || req.acctId || req.headers['x-acctno'] || acctIdQuery;
+            const acctId = acctIdQuery || req.headers['x-acctno'] || req.acctId;
             if (!acctId) {
                 return res.status(400).json({ success: false, message: 'acctId is required' });
             }
@@ -122,6 +117,29 @@ class LeadController {
         } catch (error) {
             console.error('[LeadController] getAllLeads:', error);
             return res.status(error.statusCode || 500).json({ success: false, message: error.message });
+        }
+    }
+
+    /**
+     * Get a single lead by ID.
+     * GET /api/ui/leads/:id
+     */
+    async getLeadById(req, res) {
+        try {
+            const { id } = req.params;
+            const callerAcctId = await this._resolveAcctId(req);
+            if (!callerAcctId) {
+                return res.status(400).json({ success: false, message: 'Authenticated account context is required' });
+            }
+            const lead = await leadService.getLeadById(id);
+            if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+            if (String(lead.acctId) !== String(callerAcctId)) {
+                return res.status(403).json({ success: false, message: 'Access denied' });
+            }
+            return res.status(200).json({ success: true, data: lead });
+        } catch (error) {
+            console.error('[LeadController] getLeadById:', error);
+            return res.status(500).json({ success: false, message: error.message });
         }
     }
 
@@ -166,7 +184,7 @@ class LeadController {
         try {
             const { id }         = req.params;
             const bodyAcctId     = req.query?.acctId || req.body?.acctId;
-            let   callerAcctId   = req.user?.acctId  || req.acctId;
+            let   callerAcctId   = bodyAcctId || req.headers['x-acctno'] || req.acctId;
 
             if (!callerAcctId) {
                 if (bodyAcctId && req.user?.userId) {

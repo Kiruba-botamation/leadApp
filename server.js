@@ -12,9 +12,16 @@ import ssoAuthMiddleware from './middleware/ssoAuthMiddleware.js';
 import { apiKeyAuthMiddleware } from './middleware/apiKeyAuthMiddleware.js';
 import leadRateLimiter from './middleware/leadRateLimiter.js';
 import { loadSecretsFromAWS } from './config/secretsManager.js';
-import { initializeRedis, closeRedisConnection, isRedisHealthy } from './config/redisConnector.js';
+import { initializeRedis, closeRedisConnection, isRedisHealthy, createNewRedisConnection } from './config/redisConnector.js';
 import { shutdownAll as shutdownAllQueues, getRegisteredQueues } from './config/queueManager.js';
 import { initializeWorker as initLeadWorker, getHealth as getLeadQueueHealth } from './queue/leadQueue.js';
+import { initializeWorker as initReminderWorker, getHealth as getReminderQueueHealth } from './queue/reminderQueue.js';
+import { startReminderRecovery } from './queue/reminderRecovery.js';
+import { deliverToSSEClients } from './services/channels/inApp.js';
+import noteRoutes     from './routes/noteRoutes.js';
+import reminderRoutes from './routes/reminderRoutes.js';
+import pushRoutes     from './routes/pushRoutes.js';
+import activityRoutes from './routes/activityRoutes.js';
 
 // AWS Secrets Manager - loads secrets into process.env
 const hasAWSCredentials = process.env.AWS_SECRET_MANAGER_ACCESS_KEY_ID &&
@@ -93,7 +100,33 @@ mongoConnector.connect()
     console.log('[Startup] Redis initialized successfully');
 
     initLeadWorker();
-    console.log('[Startup] Lead queue worker started | active queues:', getRegisteredQueues().join(', '));
+    initReminderWorker();
+    console.log('[Startup] Queue workers started | active queues:', getRegisteredQueues().join(', '));
+
+    // ── Redis pub/sub subscriber for SSE in-app notification delivery ──
+    // Separate connection required — a subscribed ioredis client cannot
+    // issue regular commands on the same connection.
+    const redisSubscriber = createNewRedisConnection('reminder-sse-subscriber');
+    await redisSubscriber.connect();
+    await redisSubscriber.psubscribe('reminder:notify:*');
+    redisSubscriber.on('pmessage', (_pattern, channel, message) => {
+      try {
+        // channel = "reminder:notify:{adminId}"
+        const adminId = channel.split(':')[2];
+        const payload = JSON.parse(message);
+        deliverToSSEClients(adminId, payload);
+      } catch (err) {
+        console.error('[SSE] Failed to deliver pub/sub message:', err.message);
+      }
+    });
+    console.log('[Startup] Redis SSE subscriber started');
+
+    // ── Reminder recovery cron ──────────────────────────────────────────
+    // MongoDB is connecting in parallel — the recovery cron is resilient
+    // (errors are caught per-reminder). Subsequent runs will succeed once
+    // MongoDB is ready.
+    startReminderRecovery();
+
   } catch (error) {
     console.warn('[Startup] WARNING: Redis / queue worker unavailable — queue features disabled.', error.message);
   }
@@ -131,6 +164,18 @@ app.use('/api/ui/leads', ssoAuthMiddleware, leadRoutes);
 app.use('/api/ui/analytics', ssoAuthMiddleware, analyticsRoutes);
 app.use('/api/ui/analytics/ai', ssoAuthMiddleware, aiAnalyticsRoutes);
 
+// Notes & Reminders — SSO required
+app.use('/api/ui/leads/:leadId/notes',     ssoAuthMiddleware, noteRoutes);
+app.use('/api/ui/leads/:leadId/reminders', ssoAuthMiddleware, reminderRoutes);
+
+// Batch activity counts (notes + reminders per lead, for grid highlights)
+app.use('/api/ui/activity', ssoAuthMiddleware, activityRoutes);
+
+// Push subscriptions, SSE stream, and bell inbox
+app.use('/api/ui/push', ssoAuthMiddleware, pushRoutes);
+// Bell inbox (fired reminders + mark-read) — also mounted under /api/ui/reminders
+app.use('/api/ui/reminders', ssoAuthMiddleware, pushRoutes);
+
 // Health check route
 app.get('/health', async (req, res) => {
   const redisHealthy = await isRedisHealthy();
@@ -142,7 +187,8 @@ app.get('/health', async (req, res) => {
     message: 'Server is running',
     redis: redisHealthy ? 'connected' : 'disconnected',
     queues: activeQueues,
-    leadQueue: leadQueueHealth
+    leadQueue: leadQueueHealth,
+    reminderQueue: await getReminderQueueHealth()
   });
 });
 

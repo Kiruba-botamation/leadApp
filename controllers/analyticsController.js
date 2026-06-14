@@ -93,8 +93,8 @@ class AnalyticsController {
       const source = req.body && Object.keys(req.body).length ? req.body : req.query;
       const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, categoryId, acctId: acctIdSource, dateGranularity } = source;
 
-      // Prefer acctId from the authenticated user's token; fall back to body/query param
-      const acctId = req.user?.acctId || acctIdSource;
+      // acctId always comes from the request (query/body) — never from req.user
+      const acctId = acctIdSource || req.headers['x-acctno'];
       if (!acctId) {
         return res.status(403).json({
           success: false,

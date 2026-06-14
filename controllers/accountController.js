@@ -409,11 +409,6 @@ export const getAccountToken = async (req, res) => {
             return res.status(400).json({ success: false, message: 'acctId is required' });
         }
 
-        // Ensure the requested acctId matches the authenticated user's account
-        if (req.user?.acctId && acctId !== req.user.acctId) {
-            return res.status(403).json({ success: false, message: 'Access denied: acctId does not match authenticated user' });
-        }
-
         // Verify the account exists
         const acctCheck = await perfomDataExistanceCheck(acctDataModel, { _id: acctId });
         if (!acctCheck) {
@@ -461,10 +456,6 @@ export const regenerateAccountToken = async (req, res) => {
             return res.status(400).json({ success: false, message: 'acctId is required' });
         }
 
-        // Ensure the requested acctId matches the authenticated user's account
-        if (req.user?.acctId && acctId !== req.user.acctId) {
-            return res.status(403).json({ success: false, message: 'Access denied: acctId does not match authenticated user' });
-        }
         // Generate new API key
         const newApiKey = generateAccountToken();
         // Upsert the apiKey for this acctId
@@ -502,10 +493,6 @@ export const deleteAccount = async (req, res) => {
             return res.status(400).json({ success: false, message: 'acctId and userId are required' });
         }
 
-        // Ensure the authenticated user can only delete their own account/user link
-        if (req.user?.acctId && acctId !== req.user.acctId) {
-            return res.status(403).json({ success: false, message: 'Access denied: acctId does not match authenticated user' });
-        }
         if (req.user?.userId && userId !== req.user.userId) {
             return res.status(403).json({ success: false, message: 'Access denied: userId does not match authenticated user' });
         }
