@@ -18,8 +18,8 @@ let transporter = null;
 const getTransporter = () => {
     if (transporter) return transporter;
 
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
-    if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+    const { SMTP_HOST, SMTP_PORT, EMAIL_USER, EMAIL_PASS, FROM_EMAIL } = process.env;
+    if (!SMTP_HOST || !EMAIL_USER || !EMAIL_PASS || !FROM_EMAIL) {
         logger.warn('[Email] SMTP not configured — email channel disabled');
         return null;
     }
@@ -28,7 +28,7 @@ const getTransporter = () => {
         host: SMTP_HOST,
         port: parseInt(SMTP_PORT || '587', 10),
         secure: false,
-        auth: { user: SMTP_USER, pass: SMTP_PASS }
+        auth: { user: EMAIL_USER, pass: EMAIL_PASS }
     });
 
     return transporter;
@@ -49,7 +49,7 @@ export const send = async (adminInfo, payload) => {
         return;
     }
 
-    const subject = 'CRM Reminder';
+    const subject = 'Lead App Reminder';
 
     const typeLabel = payload.type === 'pre'
         ? 'Pre-Reminder'
@@ -84,16 +84,15 @@ export const send = async (adminInfo, payload) => {
                 </div>
 
                 <p style="margin: 0; font-size: 12px; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 16px;">
-                    This reminder was set in your CRM. Log in to view the lead details.
+                    This reminder was set in your Lead App. Log in to view the lead details.
                 </p>
             </div>
         </div>
     `;
-
     try {
         await transport.sendMail({
-            from:    process.env.EMAIL_FROM || 'CRM <noreply@app.com>',
-            to:      adminInfo.email,
+            from: `Lead App <${process.env.FROM_EMAIL}>`,
+            to: adminInfo.email,
             subject,
             html
         });
