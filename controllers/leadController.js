@@ -92,7 +92,8 @@ class LeadController {
                 page, limit, sortBy, sortOrder, search,
                 acctId: acctIdQuery,
                 categoryId,
-                fieldFilters
+                fieldFilters,
+                responsibleFilter
             } = req.query;
 
             const acctId = acctIdQuery || req.headers['x-acctno'] || req.acctId;
@@ -111,6 +112,7 @@ class LeadController {
                 acctId,
                 categoryId,
                 fieldFilters,
+                responsibleFilter,
                 // Per-admin visibility — superadmins see all, others see only their assigned leads
                 accessLevel:  req.user?.accessLevel ?? null,
                 userId:       req.user?.userId ?? null

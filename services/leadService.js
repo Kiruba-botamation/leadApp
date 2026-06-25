@@ -1,5 +1,4 @@
 import Lead from '../models/leadModel.js';
-import AccountAdmin from '../models/accountAdminModel.js';
 import { performUpsert, performGet, performDelete, perfomDataExistanceCheck } from '../config/mongoConnector.js';
 import categoryService, { SYSTEM_FIELDS } from './categoryService.js';
 import { emitEvent, EVENTS } from './eventBus.js';
@@ -131,6 +130,7 @@ class LeadService {
             acctId,
             categoryId,
             fieldFilters: fieldFiltersRaw,
+            responsibleFilter,
             // Per-admin visibility: superadmins see all leads; everyone else sees
             // only leads assigned to them (responsible === their userId).
             accessLevel,
@@ -141,7 +141,15 @@ class LeadService {
 
         const query = { acctId };
         if (categoryId) query.categoryId = categoryId;
-        if (restrictToOwn) query.responsible = userId;
+        if (restrictToOwn) {
+            query.responsible = userId;
+        } else if (accessLevel === 'superadmin' && responsibleFilter) {
+            if (responsibleFilter === '__unassigned__') {
+                query.$or = [{ responsible: { $exists: false } }, { responsible: null }, { responsible: '' }];
+            } else {
+                query.responsible = responsibleFilter;
+            }
+        }
 
         // ── Parse and apply typed field filters ─────────────────────────────
         if (fieldFiltersRaw) {
@@ -160,6 +168,13 @@ class LeadService {
             const scopeConditions = [{ acctId }];
             if (categoryId) scopeConditions.push({ categoryId });
             if (restrictToOwn) scopeConditions.push({ responsible: userId });
+            else if (accessLevel === 'superadmin' && responsibleFilter) {
+                if (responsibleFilter === '__unassigned__') {
+                    scopeConditions.push({ $or: [{ responsible: { $exists: false } }, { responsible: null }, { responsible: '' }] });
+                } else {
+                    scopeConditions.push({ responsible: responsibleFilter });
+                }
+            }
             const stringFields = Object.keys(Lead.schema.paths).filter(
                 k => Lead.schema.paths[k].instance === 'String' && !['_id', 'acctId', 'responsible'].includes(k)
             );
@@ -183,9 +198,6 @@ class LeadService {
                         { $skip: skip },
                         { $limit: limit },
                         {
-                            // Join the live admin record by the assigned userId. When the admin
-                            // has been removed, the join is empty and we fall back to the snapshot
-                            // (responsibleName / responsibleProfileImage) captured at assignment.
                             $lookup: {
                                 from:         'account_admins',
                                 localField:   'responsible',
@@ -204,26 +216,13 @@ class LeadService {
                                         in: {
                                             $cond: {
                                                 if:   { $or: [{ $ne: ['$$fn', ''] }, { $ne: ['$$ln', ''] }] },
-                                                // Live admin found → use its current name
                                                 then: { $trim: { input: { $concat: ['$$fn', ' ', '$$ln'] } } },
-                                                else: {
-                                                    $cond: {
-                                                        // Admin gone but lead is assigned → snapshot, else 'Unknown', else null
-                                                        if:   { $ifNull: ['$responsibleName', false] },
-                                                        then: '$responsibleName',
-                                                        else: { $cond: [{ $ifNull: ['$responsible', false] }, 'Unknown', null] }
-                                                    }
-                                                }
+                                                else: { $cond: [{ $ifNull: ['$responsible', false] }, 'Unknown', null] }
                                             }
                                         }
                                     }
                                 },
-                                adminProfileImage: {
-                                    $ifNull: [
-                                        { $arrayElemAt: ['$_adminArr.profileImage', 0] },
-                                        { $ifNull: ['$responsibleProfileImage', null] }
-                                    ]
-                                }
+                                adminProfileImage: { $arrayElemAt: ['$_adminArr.profileImage', 0] }
                             }
                         },
                         { $project: { _adminArr: 0 } }
@@ -274,15 +273,6 @@ class LeadService {
 
         if (hasResponsible && !unassigning) {
             nextResponsible = data.responsible;
-            // Snapshot the assignee's display name/image from the live admin record
-            const admin = await AccountAdmin.findOne(
-                { acctId, userId: nextResponsible },
-                { firstName: 1, lastName: 1, profileImage: 1 }
-            ).lean();
-            data.responsibleName = admin
-                ? ([admin.firstName, admin.lastName].filter(Boolean).join(' ') || null)
-                : null;
-            data.responsibleProfileImage = admin?.profileImage || null;
         }
 
         let doc;
