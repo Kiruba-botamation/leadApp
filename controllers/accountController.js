@@ -1,9 +1,11 @@
 import { verifyAccountServices, getAdminsService } from '../services/accountService.js';
+import { normaliseBotamationAdmin } from '../services/adminService.js';
 import acctDataModel from '../models/accountModel.js';
 import accountApiKeyModel from '../models/accountApiKeyModel.js';
 import UserAccount from '../models/userAccountModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
-import { performUpsert, performGet, perfomDataExistanceCheck, performDelete, performCount } from '../config/mongoConnector.js';
+import { performUpsert, performGet, perfomDataExistanceCheck, performDelete } from '../config/mongoConnector.js';
+import { invalidateAdminCache } from '../middleware/ssoAuthMiddleware.js';
 import { generateAccountToken } from '../utils/tokenGenerator.js';
 import logger from '../utils/logger.js';
 
@@ -29,7 +31,7 @@ const findAdminByEmail = (admins, email) => {
  */
 export const verifyAccount = async (req, res) => {
     try {
-        const { acctNo, userId, email } = req.body;
+        const { acctNo, userId, email, phone } = req.body;
 
         if (!acctNo) {
             return res.status(400).json({ success: false, message: 'Account Number is required' });
@@ -80,30 +82,12 @@ export const verifyAccount = async (req, res) => {
                     }
                 }
 
-                // Check if email is an admin of the account
+                // Verify the linking user is a Botamation admin of this account, and
+                // create exactly ONE admin record for them (matched by email).
+                // Admins are added to account_admins ONLY here — on link.
                 if (email) {
                     try {
                         const admins = await getAdminsService(acctNo);
-                        const normalised = (Array.isArray(admins) ? admins : [admins]).map((a) => ({
-                            adminId: a.adminId ?? a.id ?? a._id ?? null,
-                            firstName: a.firstName ?? a.first_name ?? null,
-                            lastName: a.lastName ?? a.last_name ?? null,
-                            phone: a.phone ?? a.mobile ?? null,
-                            email: a.email ?? null,
-                            profileImage: a.profile_pic ?? a.profileImage ?? a.profile_image ?? a.profileImageUrl
-                                ?? a.picture ?? a.photo ?? a.avatar ?? a.image ?? a.thumbnail
-                                ?? a.profile_photo ?? a.dp ?? null
-                        }));
-                        // Persist admins to the local database — scoped by acctId
-                        await Promise.all(
-                            normalised.map((admin) => {
-                                const filter = admin.adminId
-                                    ? { acctId, adminId: admin.adminId }
-                                    : { acctId, email: admin.email };
-                                return performUpsert(AccountAdmin, filter, { ...admin, acctId });
-                            })
-                        );
-                        logger.info('Admins synced to database during account verification', { acctId, count: normalised.length });
                         const matchedAdmin = findAdminByEmail(admins, email);
                         if (!matchedAdmin) {
                             return res.status(403).json({
@@ -119,8 +103,32 @@ export const verifyAccount = async (req, res) => {
                                 }
                             });
                         }
+
+                        // Create/refresh the single admin record for the linking user.
+                        // Default access level is superadmin; email/phone are not stored.
+                        if (userId && acctId) {
+                            const n = normaliseBotamationAdmin(matchedAdmin);
+                            await performUpsert(
+                                AccountAdmin,
+                                { acctId, userId },
+                                {
+                                    userId,
+                                    acctId,
+                                    chatbotAdminId: n.chatbotAdminId,
+                                    firstName: n.firstName,
+                                    lastName: n.lastName,
+                                    profileImage: n.profileImage,
+                                    // Contact details come from the user's profile, not Botamation
+                                    email: email || req.user?.email || null,
+                                    phone: phone || null,
+                                    accessLevel: 'superadmin'
+                                }
+                            );
+                            invalidateAdminCache(userId, acctId);
+                            logger.info('Admin record created for linking user', { acctId, userId, operation: 'createAccountAdmin' });
+                        }
                     } catch (adminError) {
-                        console.error('verifyAccount: Error fetching account admins:', adminError);
+                        console.error('verifyAccount: Error verifying account admin:', adminError);
                         // Don't fail the entire operation if admin check fails
                     }
                 }
@@ -512,6 +520,11 @@ export const deleteAccount = async (req, res) => {
         // Delete UserAccount link
         await performDelete(UserAccount, { acctId, userId });
         logger.info('UserAccount link deleted', { acctId, userId, operation: 'deleteUserAccount' });
+
+        // Remove the user's admin record for this account (unlink removes admin status)
+        await performDelete(AccountAdmin, { acctId, userId });
+        invalidateAdminCache(userId, acctId);
+        logger.info('AccountAdmin record deleted', { acctId, userId, operation: 'deleteAccountAdmin' });
 
         // Delete API keys for this account
         await performDelete(accountApiKeyModel, { acctId });

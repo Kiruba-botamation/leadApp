@@ -25,8 +25,8 @@ router.delete('/fired/:reminderId', reminderController.dismissFired.bind(reminde
  */
 router.post('/subscribe', async (req, res) => {
     try {
-        const adminId = req.body.adminId || req.user?.accountAdminId;
-        if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+        const userId = req.user?.userId;
+        if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
         const { endpoint, keys } = req.body;
         if (!endpoint || !keys?.p256dh || !keys?.auth) {
@@ -35,7 +35,7 @@ router.post('/subscribe', async (req, res) => {
 
         await PushSubscription.findOneAndUpdate(
             { endpoint },
-            { adminId, endpoint, keys },
+            { userId, endpoint, keys },
             { upsert: true, new: true }
         );
 
@@ -81,11 +81,10 @@ router.get('/vapid-public-key', (req, res) => {
  * The admin's browser opens this once and keeps it open.
  */
 router.get('/stream', (req, res) => {
-    // adminId is sent as a query param by the frontend (account_admins._id from localStorage).
-    // Falls back to middleware-resolved accountAdminId when available.
-    // acctId is also sent as a query param — used by middleware for the fallback lookup.
-    const adminId = req.query.adminId || req.user?.accountAdminId;
-    if (!adminId) return res.status(401).json({ success: false, message: 'Authentication required' });
+    // The SSE stream is keyed by the authenticated user's lead-app userId — the same
+    // id the reminder processor publishes to on reminder:notify:{userId}.
+    const userId = req.user?.userId;
+    if (!userId) return res.status(401).json({ success: false, message: 'Authentication required' });
 
     // SSE headers
     res.writeHead(200, {
@@ -99,7 +98,7 @@ router.get('/stream', (req, res) => {
     res.write('data: {"type":"connected"}\n\n');
 
     // Register this connection
-    registerSSEClient(adminId, res);
+    registerSSEClient(userId, res);
 
     // Heartbeat every 30 seconds to prevent proxy timeouts
     const heartbeat = setInterval(() => {
@@ -109,7 +108,7 @@ router.get('/stream', (req, res) => {
     // Clean up on disconnect
     req.on('close', () => {
         clearInterval(heartbeat);
-        removeSSEClient(adminId, res);
+        removeSSEClient(userId, res);
     });
 });
 

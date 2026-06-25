@@ -3,7 +3,9 @@ import mongoose from 'mongoose';
 /**
  * Lead Reminders — `lead_reminders` collection
  *
- * Each reminder belongs to one admin (creator-only visibility).
+ * A reminder is created by `userId` but delivered at fire time to the lead's
+ * current responsible (see `notifiedUserId`). Only pending reminders may be
+ * edited/deleted, and only by the current assignee.
  * Supports a primary fire time (scheduledAt) and an optional
  * pre-reminder fired N minutes/hours/days before.
  *
@@ -25,10 +27,20 @@ const leadReminderSchema = new mongoose.Schema(
             type: String,
             required: true
         },
-        /** Admin who created this reminder (account_admins._id) */
-        adminId: {
+        /** Lead-app user who created this reminder (account_admins.userId) */
+        userId: {
             type: String,
             required: true
+        },
+        /**
+         * The user the notification was actually delivered to — resolved at fire time
+         * as the lead's current responsible (falling back to the creator when the lead
+         * is unassigned). Drives the bell inbox so a reassigned reminder reaches the new
+         * assignee. Null until the reminder fires.
+         */
+        notifiedUserId: {
+            type: String,
+            default: null
         },
         /** The lead this reminder is about (leads._id) */
         leadId: {
@@ -107,6 +119,17 @@ const leadReminderSchema = new mongoose.Schema(
             default: false
         },
 
+        // ── Client Reminder ──────────────────────────────────────────────────
+        clientReminderEnabled: { type: Boolean, default: false },
+        clientMessage:         { type: String,  trim: true, default: '' },
+        clientScheduledAt:     { type: Date },
+        clientChannels:        { type: [String], enum: ['email', 'whatsapp', 'sms'], default: [] },
+        clientSent:            { type: Boolean, default: false },
+        clientJobScheduled:    { type: Boolean, default: false },
+        clientName:            { type: String, default: '' },
+        clientPhone:           { type: String, default: '' },
+        clientEmail:           { type: String, default: '' },
+
         /**
          * Snapshot of the lead's display name and phone at creation time.
          * Stored so notifications (SSE, push, bell inbox) can show lead context
@@ -123,11 +146,11 @@ const leadReminderSchema = new mongoose.Schema(
     }
 );
 
-// Bell badge query — unread fired reminders for an admin
-leadReminderSchema.index({ adminId: 1, mainSent: 1, notificationRead: 1 });
+// Bell badge query — unread fired reminders delivered to a user
+leadReminderSchema.index({ notifiedUserId: 1, mainSent: 1, notificationRead: 1 });
 
-// Per-admin reminders list, sorted by scheduled time
-leadReminderSchema.index({ adminId: 1, mainSent: 1, scheduledAt: -1 });
+// Per-recipient fired reminders list, sorted by scheduled time
+leadReminderSchema.index({ notifiedUserId: 1, mainSent: 1, scheduledAt: -1 });
 
 // Per-lead panel view
 leadReminderSchema.index({ acctId: 1, leadId: 1, scheduledAt: 1 });
@@ -137,6 +160,9 @@ leadReminderSchema.index({ mainSent: 1, jobScheduled: 1, scheduledAt: 1 });
 
 // Pre-reminder recovery
 leadReminderSchema.index({ preReminderEnabled: 1, preReminderSent: 1, jobScheduled: 1, scheduledAt: 1 });
+
+// Client reminder recovery
+leadReminderSchema.index({ clientReminderEnabled: 1, clientSent: 1, clientJobScheduled: 1, clientScheduledAt: 1 });
 
 const LeadReminder = mongoose.model('LeadReminder', leadReminderSchema);
 

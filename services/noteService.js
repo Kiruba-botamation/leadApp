@@ -23,20 +23,22 @@ class NoteService {
 
         if (!notes.length) return [];
 
-        // Batch-fetch admin profiles for all unique adminIds
-        const adminIds  = [...new Set(notes.map(n => n.adminId))];
-        const admins    = await AccountAdmin.find({ _id: { $in: adminIds } }, {
-            firstName: 1, lastName: 1, profileImage: 1
+        // Batch-fetch live admin profiles by userId (scoped to the account)
+        const userIds = [...new Set(notes.map(n => n.userId))];
+        const admins  = await AccountAdmin.find({ acctId, userId: { $in: userIds } }, {
+            userId: 1, firstName: 1, lastName: 1, profileImage: 1
         }).lean();
 
-        const adminMap  = Object.fromEntries(admins.map(a => [a._id, a]));
+        const adminMap = Object.fromEntries(admins.map(a => [a.userId, a]));
 
         return notes.map(note => {
-            const admin = adminMap[note.adminId] || {};
+            const admin = adminMap[note.userId];
+            // Prefer the live admin name; fall back to the snapshot, then 'Unknown'
+            const liveName = admin ? [admin.firstName, admin.lastName].filter(Boolean).join(' ') : '';
             return {
                 ...note,
-                adminName: [admin.firstName, admin.lastName].filter(Boolean).join(' ') || 'Unknown',
-                adminProfileImage: admin.profileImage || null
+                adminName: liveName || note.userName || 'Unknown',
+                adminProfileImage: admin?.profileImage || null
             };
         });
     }
@@ -69,17 +71,21 @@ class NoteService {
     }
 
     /**
-     * Create a new note.
+     * Create a new note. Snapshots the author's display name so it survives
+     * the admin later being removed from the account.
      *
      * @param {string} acctId
-     * @param {string} adminId
+     * @param {string} userId
      * @param {string} leadId
      * @param {string} description
+     * @param {string} [fallbackName]  used when no admin record is found (e.g. email)
      * @returns {Promise<object>}
      */
-    async createNote(acctId, adminId, leadId, description) {
-        const note = await LeadNote.create({ acctId, adminId, leadId, description });
-        logger.info(`[NoteService] Note created | noteId=${note._id} | leadId=${leadId} | adminId=${adminId}`);
+    async createNote(acctId, userId, leadId, description, fallbackName = null) {
+        const admin = await AccountAdmin.findOne({ acctId, userId }, { firstName: 1, lastName: 1 }).lean();
+        const userName = (admin ? [admin.firstName, admin.lastName].filter(Boolean).join(' ') : '') || fallbackName || null;
+        const note = await LeadNote.create({ acctId, userId, userName, leadId, description });
+        logger.info(`[NoteService] Note created | noteId=${note._id} | leadId=${leadId} | userId=${userId}`);
         return note;
     }
 
@@ -87,13 +93,13 @@ class NoteService {
      * Update a note — only the creator may edit.
      *
      * @param {string} noteId
-     * @param {string} adminId   — must match the note's adminId
+     * @param {string} userId   — must match the note's userId
      * @param {string} description
      * @returns {Promise<object|null>}
      */
-    async updateNote(noteId, adminId, description) {
+    async updateNote(noteId, userId, description) {
         const updated = await LeadNote.findOneAndUpdate(
-            { _id: noteId, adminId },
+            { _id: noteId, userId },
             { description },
             { new: true }
         ).lean();
@@ -107,11 +113,11 @@ class NoteService {
      * Delete a note — only the creator may delete.
      *
      * @param {string} noteId
-     * @param {string} adminId   — must match the note's adminId
+     * @param {string} userId   — must match the note's userId
      * @returns {Promise<boolean>} true if deleted, false if not found/forbidden
      */
-    async deleteNote(noteId, adminId) {
-        const result = await LeadNote.findOneAndDelete({ _id: noteId, adminId });
+    async deleteNote(noteId, userId) {
+        const result = await LeadNote.findOneAndDelete({ _id: noteId, userId });
         if (!result) return false;
         logger.info(`[NoteService] Note deleted | noteId=${noteId}`);
         return true;

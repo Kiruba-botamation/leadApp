@@ -40,7 +40,10 @@ export const send = async (adminInfo, payload) => {
 
     const adminName  = [adminInfo.firstName, adminInfo.lastName].filter(Boolean).join(' ') || 'Admin';
     const typeLabel  = payload.type === 'pre' ? '⏰ Pre-Reminder' : '🔔 Reminder';
-    const body       = `${typeLabel}\n\nHi ${adminName},\n\n${payload.description}\n\n_Scheduled: ${new Date(payload.scheduledAt).toLocaleString()}_`;
+    const leadName   = payload.leadName  || '';
+    const leadPhone  = payload.leadPhone || '';
+    const leadLine   = [leadName && `👤 ${leadName}`, leadPhone && `📞 ${leadPhone}`].filter(Boolean).join('\n');
+    const body       = `${typeLabel}\n\nHi ${adminName},\n\n${leadLine ? leadLine + '\n\n' : ''}${payload.description}\n\n_Scheduled: ${new Date(payload.scheduledAt).toLocaleString()}_`;
 
     // ── TODO: Update the body below to match the exact Botamation /contacts API schema ──
     const requestBody = {
@@ -60,6 +63,49 @@ export const send = async (adminInfo, payload) => {
         logger.info(`[WhatsApp] Sent reminder to phone ${adminInfo.phone}`);
     } catch (err) {
         logger.error(`[WhatsApp] Failed to send to ${adminInfo.phone}: ${err.message}`);
+        throw err;
+    }
+};
+
+/**
+ * Send a client-facing WhatsApp message.
+ *
+ * @param {object} clientInfo  - { name, phone, email }
+ * @param {object} payload     - { reminderId, message, scheduledAt, leadId }
+ */
+export const sendToClient = async (clientInfo, payload) => {
+    const apiUrl = process.env.WHATSAPP_API_URL;
+    const apiKey = process.env.CHATBOT_PLATFORM_API_KEY;
+
+    if (!apiUrl || !apiKey) {
+        logger.warn('[WhatsApp] Not configured — skipping client WhatsApp');
+        return;
+    }
+
+    if (!clientInfo?.phone) {
+        logger.info('[WhatsApp] Client has no phone number — skipping client WhatsApp');
+        return;
+    }
+
+    const clientName = clientInfo.name || 'there';
+    const body       = `Hi ${clientName},\n\n${payload.message}\n\n_Scheduled: ${new Date(payload.scheduledAt).toLocaleString()}_`;
+
+    const requestBody = {
+        phone:   clientInfo.phone,
+        message: body,
+    };
+
+    try {
+        await axios.post(`${apiUrl}/contacts`, requestBody, {
+            headers: {
+                'x-access-token': apiKey,
+                'Content-Type':   'application/json'
+            },
+            timeout: 10000
+        });
+        logger.info(`[WhatsApp] Sent client reminder to ${clientInfo.phone}`);
+    } catch (err) {
+        logger.error(`[WhatsApp] Failed to send client reminder to ${clientInfo.phone}: ${err.message}`);
         throw err;
     }
 };

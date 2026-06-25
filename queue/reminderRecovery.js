@@ -5,15 +5,13 @@
  * Finds reminders whose fire time has passed but were never enqueued
  * (Redis was down, server crashed, etc.) and processes them directly.
  *
- * A reminder is considered "missed" when:
- *   - scheduledAt <= now (the fire time has passed)
- *   - jobScheduled === false (was never enqueued in BullMQ)
- *   - mainSent === false (hasn't been delivered yet)
- *
- * For pre-reminders, the same logic applies separately.
+ * Covers three cases:
+ *   1. Missed main reminders
+ *   2. Missed pre-reminders
+ *   3. Missed client reminders
  */
 import LeadReminder from '../models/leadReminderModel.js';
-import { processReminder } from './reminderProcessor.js';
+import { processReminder, processClientReminder } from './reminderProcessor.js';
 import logger from '../utils/logger.js';
 
 const RECOVERY_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
@@ -45,7 +43,6 @@ const runRecovery = async () => {
         }
 
         // ── Missed pre-reminders ───────────────────────────────────────────
-        // Calculate the pre-reminder fire time for each and check if it's past
         const pendingPre = await LeadReminder.find({
             preReminderEnabled: true,
             preReminderSent:    false,
@@ -73,6 +70,26 @@ const runRecovery = async () => {
                 }
             }
         }
+
+        // ── Missed client reminders ────────────────────────────────────────
+        const missedClient = await LeadReminder.find({
+            clientReminderEnabled: true,
+            clientSent:            false,
+            clientJobScheduled:    false,
+            clientScheduledAt:     { $lte: now },
+        }).lean();
+
+        if (missedClient.length) {
+            logger.info(`[ReminderRecovery] Found ${missedClient.length} missed client reminder(s)`);
+            for (const reminder of missedClient) {
+                try {
+                    await processClientReminder(reminder._id.toString());
+                } catch (err) {
+                    logger.error(`[ReminderRecovery] Failed to recover client reminder ${reminder._id}: ${err.message}`);
+                }
+            }
+        }
+
     } catch (err) {
         logger.error(`[ReminderRecovery] Recovery scan failed: ${err.message}`);
     }
@@ -84,7 +101,6 @@ const runRecovery = async () => {
  * Call once from server.js after MongoDB is connected.
  */
 export const startReminderRecovery = () => {
-    // Run immediately on startup to catch anything missed during downtime
     runRecovery();
     setInterval(runRecovery, RECOVERY_INTERVAL_MS);
     logger.info('[ReminderRecovery] Recovery cron started (interval: 2 min)');

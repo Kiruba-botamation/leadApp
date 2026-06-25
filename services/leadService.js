@@ -1,6 +1,11 @@
 import Lead from '../models/leadModel.js';
+import AccountAdmin from '../models/accountAdminModel.js';
 import { performUpsert, performGet, performDelete, perfomDataExistanceCheck } from '../config/mongoConnector.js';
 import categoryService, { SYSTEM_FIELDS } from './categoryService.js';
+import { emitEvent, EVENTS } from './eventBus.js';
+
+/** Sentinel values that mean "clear the responsible / unassign". */
+const UNASSIGNED_VALUES = new Set(['', 'none', 'None', null, undefined]);
 
 /** Fields that are internal / framework-managed and should never be treated as lead data */
 const INTERNAL_FIELDS = new Set(['_id', 'acctId', 'categoryId', '__v', 'createdAt', 'updatedAt', 'category']);
@@ -40,9 +45,14 @@ class LeadService {
         // ── 2. Validate each item in the payload ────────────────────────────
         const items = Array.isArray(leadData) ? leadData : [leadData];
         for (const item of items) {
-            // Mandatory system field: "id"
-            if (!item.id && item.id !== 0) {
-                const err = new Error('Field "id" is required for all leads.');
+            // Mandatory system fields: "name" and "phone"
+            if (!item.name) {
+                const err = new Error('Field "name" is required for all leads.');
+                err.statusCode = 400;
+                throw err;
+            }
+            if (!item.phone) {
+                const err = new Error('Field "phone" is required for all leads.');
                 err.statusCode = 400;
                 throw err;
             }
@@ -93,6 +103,12 @@ class LeadService {
             leadResult = result.doc;
         }
 
+        // Emit a created event per lead so webhooks can fan out to external systems
+        const createdLeads = Array.isArray(leadResult) ? leadResult : [leadResult];
+        for (const lead of createdLeads) {
+            if (lead) emitEvent(EVENTS.LEAD_CREATED, { acctId, data: { leadId: lead._id, lead } });
+        }
+
         return { lead: leadResult, categoryId };
     }
 
@@ -114,11 +130,18 @@ class LeadService {
             search,
             acctId,
             categoryId,
-            fieldFilters: fieldFiltersRaw
+            fieldFilters: fieldFiltersRaw,
+            // Per-admin visibility: superadmins see all leads; everyone else sees
+            // only leads assigned to them (responsible === their userId).
+            accessLevel,
+            userId
         } = filters;
+
+        const restrictToOwn = accessLevel !== 'superadmin' && !!userId;
 
         const query = { acctId };
         if (categoryId) query.categoryId = categoryId;
+        if (restrictToOwn) query.responsible = userId;
 
         // ── Parse and apply typed field filters ─────────────────────────────
         if (fieldFiltersRaw) {
@@ -136,13 +159,15 @@ class LeadService {
         if (search) {
             const scopeConditions = [{ acctId }];
             if (categoryId) scopeConditions.push({ categoryId });
+            if (restrictToOwn) scopeConditions.push({ responsible: userId });
             const stringFields = Object.keys(Lead.schema.paths).filter(
-                k => Lead.schema.paths[k].instance === 'String' && !['_id', 'acctId', 'adminId'].includes(k)
+                k => Lead.schema.paths[k].instance === 'String' && !['_id', 'acctId', 'responsible'].includes(k)
             );
             const searchConditions = stringFields.map(field => ({ [field]: { $regex: search, $options: 'i' } }));
             query.$and = [...scopeConditions, { $or: searchConditions }];
             delete query.acctId;
             delete query.categoryId;
+            delete query.responsible;
         }
 
         const skip = (page - 1) * limit;
@@ -158,10 +183,13 @@ class LeadService {
                         { $skip: skip },
                         { $limit: limit },
                         {
+                            // Join the live admin record by the assigned userId. When the admin
+                            // has been removed, the join is empty and we fall back to the snapshot
+                            // (responsibleName / responsibleProfileImage) captured at assignment.
                             $lookup: {
                                 from:         'account_admins',
-                                localField:   'adminId',
-                                foreignField: 'chatbotAdminId',
+                                localField:   'responsible',
+                                foreignField: 'userId',
                                 as:           '_adminArr'
                             }
                         },
@@ -176,13 +204,26 @@ class LeadService {
                                         in: {
                                             $cond: {
                                                 if:   { $or: [{ $ne: ['$$fn', ''] }, { $ne: ['$$ln', ''] }] },
+                                                // Live admin found → use its current name
                                                 then: { $trim: { input: { $concat: ['$$fn', ' ', '$$ln'] } } },
-                                                else: null
+                                                else: {
+                                                    $cond: {
+                                                        // Admin gone but lead is assigned → snapshot, else 'Unknown', else null
+                                                        if:   { $ifNull: ['$responsibleName', false] },
+                                                        then: '$responsibleName',
+                                                        else: { $cond: [{ $ifNull: ['$responsible', false] }, 'Unknown', null] }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                 },
-                                adminProfileImage: { $ifNull: [{ $arrayElemAt: ['$_adminArr.profileImage', 0] }, null] }
+                                adminProfileImage: {
+                                    $ifNull: [
+                                        { $arrayElemAt: ['$_adminArr.profileImage', 0] },
+                                        { $ifNull: ['$responsibleProfileImage', null] }
+                                    ]
+                                }
                             }
                         },
                         { $project: { _adminArr: 0 } }
@@ -211,10 +252,62 @@ class LeadService {
         return result?.data?.[0] || null;
     }
 
-    /** Update a lead by _id */
-    async updateLead(id, updateData) {
-        const result = await performUpsert(Lead, { _id: id }, updateData);
-        return result.doc || null;
+    /**
+     * Update a lead by _id.
+     *
+     * When `responsible` is part of the update we:
+     *   - resolve & snapshot the assignee's name/image (so it survives admin removal),
+     *   - clear the field + snapshot when the value is an "unassigned" sentinel,
+     *   - emit lead.assigned / lead.unassigned events on an actual transition.
+     *
+     * @param {string} id
+     * @param {object} updateData
+     * @param {object} context  { acctId, prevResponsible }
+     */
+    async updateLead(id, updateData, context = {}) {
+        const { acctId, prevResponsible = null } = context;
+        const data = { ...updateData };
+
+        const hasResponsible = Object.prototype.hasOwnProperty.call(data, 'responsible');
+        const unassigning = hasResponsible && UNASSIGNED_VALUES.has(data.responsible);
+        let nextResponsible = null;
+
+        if (hasResponsible && !unassigning) {
+            nextResponsible = data.responsible;
+            // Snapshot the assignee's display name/image from the live admin record
+            const admin = await AccountAdmin.findOne(
+                { acctId, userId: nextResponsible },
+                { firstName: 1, lastName: 1, profileImage: 1 }
+            ).lean();
+            data.responsibleName = admin
+                ? ([admin.firstName, admin.lastName].filter(Boolean).join(' ') || null)
+                : null;
+            data.responsibleProfileImage = admin?.profileImage || null;
+        }
+
+        let doc;
+        if (unassigning) {
+            delete data.responsible;
+            doc = await Lead.findOneAndUpdate(
+                { _id: id },
+                { $set: data, $unset: { responsible: '', responsibleName: '', responsibleProfileImage: '' } },
+                { new: true }
+            ).lean();
+        } else {
+            const result = await performUpsert(Lead, { _id: id }, data);
+            doc = result.doc || null;
+        }
+
+        // Emit assignment transition events for webhooks
+        if (hasResponsible && String(prevResponsible || '') !== String(nextResponsible || '')) {
+            if (nextResponsible) {
+                emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, data: { leadId: id, responsible: nextResponsible, previous: prevResponsible, lead: doc } });
+            } else {
+                emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, data: { leadId: id, previous: prevResponsible, lead: doc } });
+            }
+        }
+
+        return doc;
     }
 
     /** Delete a lead by _id */

@@ -1,18 +1,19 @@
 /**
- * SMS Notification Channel — Coming Soon
+ * SMS Notification Channel — Structured Stub
  *
- * This is a placeholder module. SMS delivery is not yet implemented.
- * When ready, integrate an SMS provider (Twilio, AWS SNS, etc.) here
- * following the same pattern as the other channel modules.
- *
- * The `send` function is a no-op so it doesn't break the dispatcher.
+ * SMS delivery is not yet wired to a provider.
+ * Wire up Twilio, AWS SNS, etc. in the `send` function below when ready.
+ * The stub logs the attempt and returns without error so `clientSent` is
+ * marked true — the reminder won't re-fire once a provider is configured.
  */
 import logger from '../../utils/logger.js';
 
 /**
- * @param {object} adminInfo  - { phone, firstName, lastName }
- * @param {object} payload    - { reminderId, title, description, scheduledAt, type }
+ * @param {object} clientInfo  - { name, phone, email }
+ * @param {object} payload     - { reminderId, message, scheduledAt, leadId }
  */
-export const send = async (adminInfo, payload) => {
-    logger.info(`[SMS] Channel not yet implemented — skipping SMS for adminId via phone ${adminInfo?.phone || 'unknown'}`);
+export const send = async (clientInfo, payload) => {
+    logger.info(`[SMS stub] Would send to ${clientInfo?.phone || 'unknown'}: "${payload?.message || ''}"`);
+    // TODO: Replace this stub with a real provider call, e.g.:
+    //   await twilioClient.messages.create({ to: clientInfo.phone, body: payload.message, from: process.env.SMS_FROM });
 };

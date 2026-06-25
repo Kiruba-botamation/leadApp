@@ -3,15 +3,15 @@
  *
  * HTTP handlers for lead reminders.
  * Auth enforced by ssoAuthMiddleware (mounted in server.js).
- * Admin identity resolved from req.user.accountAdminId (account_admins._id).
+ * The reminder owner is the lead-app userId from the authenticated session (req.user.userId).
  */
 import reminderService from '../services/reminderService.js';
 import Lead from '../models/leadModel.js';
-import LeadCategory from '../models/leadCategoryModel.js';
 import LeadReminder from '../models/leadReminderModel.js';
 import logger from '../utils/logger.js';
 
-const VALID_CHANNELS = ['inApp', 'push', 'email', 'whatsapp'];
+const VALID_CHANNELS        = ['inApp', 'push', 'email', 'whatsapp'];
+const VALID_CLIENT_CHANNELS = ['email', 'whatsapp', 'sms'];
 const VALID_UNITS = ['minutes', 'hours', 'days'];
 
 class ReminderController {
@@ -44,16 +44,15 @@ class ReminderController {
         try {
             const { leadId } = req.params;
             const acctId = req.query.acctId || req.headers['x-acctno'];
-            // Prefer adminId sent explicitly by the frontend (account-specific _id from localStorage).
-            // Fall back to middleware-resolved accountAdminId (requires acctId to be accurate).
-            const adminId = req.body.adminId || req.user?.accountAdminId;
+            const userId = req.user?.userId;
             const {
                 description, scheduledAt,
                 preReminderEnabled, preReminderValue, preReminderUnit,
-                channels
+                channels,
+                clientReminderEnabled, clientMessage, clientScheduledAt, clientChannels
             } = req.body;
 
-            if (!acctId || !adminId) return res.status(400).json({ success: false, message: 'Account context required' });
+            if (!acctId || !userId) return res.status(400).json({ success: false, message: 'Account context required' });
             if (!description?.trim()) return res.status(400).json({ success: false, message: 'description is required' });
             if (!scheduledAt) return res.status(400).json({ success: false, message: 'scheduledAt is required' });
 
@@ -71,29 +70,50 @@ class ReminderController {
                 }
             }
 
-            // Validate channels
+            // Validate optional client reminder fields
+            let validClientChannels = [];
+            if (clientReminderEnabled) {
+                if (!clientMessage?.trim()) {
+                    return res.status(400).json({ success: false, message: 'clientMessage is required when clientReminderEnabled is true' });
+                }
+                if (!clientScheduledAt) {
+                    return res.status(400).json({ success: false, message: 'clientScheduledAt is required when clientReminderEnabled is true' });
+                }
+                if (new Date(clientScheduledAt) <= new Date()) {
+                    return res.status(400).json({ success: false, message: 'clientScheduledAt must be in the future' });
+                }
+                validClientChannels = (clientChannels || []).filter(c => VALID_CLIENT_CHANNELS.includes(c));
+                if (validClientChannels.length === 0) {
+                    return res.status(400).json({ success: false, message: 'At least one valid clientChannel (email, whatsapp, sms) is required' });
+                }
+            }
+
             const validChannels = channels?.filter(c => VALID_CHANNELS.includes(c));
 
             const reminder = await reminderService.createReminder({
-                acctId, adminId, leadId,
+                acctId, userId, leadId,
                 description, scheduledAt,
                 preReminderEnabled, preReminderValue, preReminderUnit,
-                channels: validChannels
+                channels: validChannels,
+                clientReminderEnabled: clientReminderEnabled || false,
+                clientMessage:         clientReminderEnabled ? clientMessage.trim() : '',
+                clientScheduledAt:     clientReminderEnabled ? clientScheduledAt : undefined,
+                clientChannels:        validClientChannels,
             });
 
-            // Best-effort: populate lead snapshot so notifications can show name/phone
+            // Best-effort: populate lead snapshot + client contact info (from system fields)
             try {
                 const lead = await Lead.findById(leadId).lean();
                 if (lead) {
-                    const category = await LeadCategory.findById(lead.categoryId).lean();
-                    const nameField = category?.fields?.[0]?.field;
-                    const name = nameField ? String(lead[nameField] || '') : '';
-                    const phoneCol = category?.fields?.find(f =>
-                        /phone|mobile|tel/i.test(f.label || '') ||
-                        /phone|mobile|tel/i.test(f.field || '')
-                    );
-                    const phone = phoneCol ? String(lead[phoneCol.field] || '') : '';
-                    await LeadReminder.findByIdAndUpdate(reminder._id, { leadSnapshot: { name, phone } });
+                    await LeadReminder.findByIdAndUpdate(reminder._id, {
+                        leadSnapshot: {
+                            name:  String(lead.name  || ''),
+                            phone: String(lead.phone || ''),
+                        },
+                        clientName:  String(lead.name  || ''),
+                        clientPhone: String(lead.phone || ''),
+                        clientEmail: String(lead.email || ''),
+                    });
                 }
             } catch (snapErr) {
                 logger.warn('[ReminderController] leadSnapshot error:', snapErr.message);
@@ -114,9 +134,9 @@ class ReminderController {
         try {
             const { reminderId } = req.params;
             const updates = req.body;
-            const adminId = updates.adminId;
+            const userId = req.user?.userId;
 
-            if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+            if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
             if (updates.scheduledAt && new Date(updates.scheduledAt) <= new Date()) {
                 return res.status(400).json({ success: false, message: 'scheduledAt must be in the future' });
@@ -126,7 +146,27 @@ class ReminderController {
                 updates.channels = updates.channels.filter(c => VALID_CHANNELS.includes(c));
             }
 
-            const updated = await reminderService.updateReminder(reminderId, adminId, updates);
+            // Validate client reminder fields if enabled
+            if (updates.clientReminderEnabled) {
+                if (!updates.clientMessage?.trim()) {
+                    return res.status(400).json({ success: false, message: 'clientMessage is required when clientReminderEnabled is true' });
+                }
+                if (!updates.clientScheduledAt) {
+                    return res.status(400).json({ success: false, message: 'clientScheduledAt is required when clientReminderEnabled is true' });
+                }
+                if (new Date(updates.clientScheduledAt) <= new Date()) {
+                    return res.status(400).json({ success: false, message: 'clientScheduledAt must be in the future' });
+                }
+                const validClientChs = (updates.clientChannels || []).filter(c => VALID_CLIENT_CHANNELS.includes(c));
+                if (validClientChs.length === 0) {
+                    return res.status(400).json({ success: false, message: 'At least one valid clientChannel is required' });
+                }
+                updates.clientChannels = validClientChs;
+            } else if (updates.clientChannels) {
+                updates.clientChannels = updates.clientChannels.filter(c => VALID_CLIENT_CHANNELS.includes(c));
+            }
+
+            const updated = await reminderService.updateReminder(reminderId, userId, updates);
             if (!updated) {
                 return res.status(404).json({ success: false, message: 'Reminder not found or you do not have permission to edit it' });
             }
@@ -145,11 +185,11 @@ class ReminderController {
     async deleteReminder(req, res) {
         try {
             const { reminderId } = req.params;
-            const adminId        = req.body.adminId || req.user?.accountAdminId;
+            const userId         = req.user?.userId;
 
-            if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+            if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            const deleted = await reminderService.deleteReminder(reminderId, adminId);
+            const deleted = await reminderService.deleteReminder(reminderId, userId);
             if (!deleted) {
                 return res.status(404).json({ success: false, message: 'Reminder not found or you do not have permission to delete it' });
             }
@@ -167,18 +207,18 @@ class ReminderController {
      */
     async getFiredReminders(req, res) {
         try {
-            const adminId = req.query.adminId || req.user?.accountAdminId;
-            if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+            const userId = req.user?.userId;
+            if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
             const page = Math.max(1, parseInt(req.query.page, 10) || 1);
             const limit = Math.min(50, parseInt(req.query.limit, 10) || 10);
 
-            const { items, total, unread } = await reminderService.getFiredUnreadReminders(adminId, { page, limit });
+            const { items, total, unread } = await reminderService.getFiredUnreadReminders(userId, { page, limit });
             return res.status(200).json({
                 success: true,
                 data: items,
-                count: unread,        // unread count for badge
-                total,                  // total non-dismissed items
+                count: unread,
+                total,
                 page,
                 limit,
                 hasMore: page * limit < total,
@@ -192,16 +232,15 @@ class ReminderController {
     /**
      * POST /api/ui/reminders/mark-read
      * Mark fired reminders as read (clears the bell badge).
-     * Body: { reminderIds?: string[] }  — omit to mark all
      */
     async markRead(req, res) {
         try {
-            const adminId = req.body.adminId || req.user?.accountAdminId;
+            const userId = req.user?.userId;
             const { reminderIds } = req.body;
 
-            if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+            if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            await reminderService.markRemindersRead(adminId, reminderIds);
+            await reminderService.markRemindersRead(userId, reminderIds);
             return res.status(200).json({ success: true, message: 'Reminders marked as read' });
         } catch (err) {
             console.error('[ReminderController] markRead:', err);
@@ -216,10 +255,10 @@ class ReminderController {
     async dismissFired(req, res) {
         try {
             const { reminderId } = req.params;
-            const adminId = req.query.adminId || req.user?.accountAdminId;
-            if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+            const userId = req.user?.userId;
+            if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            await reminderService.deleteFiredReminder(reminderId, adminId);
+            await reminderService.deleteFiredReminder(reminderId, userId);
             return res.status(200).json({ success: true, message: 'Reminder dismissed' });
         } catch (err) {
             console.error('[ReminderController] dismissFired:', err);
@@ -230,20 +269,19 @@ class ReminderController {
     /**
      * POST /api/ui/activity/reminders/batch-counts
      * Get pending reminder counts for multiple leads (used to highlight grid buttons).
-     * Body: { leadIds: string[] }
      */
     async getBatchReminderCounts(req, res) {
         try {
             const acctId = req.query.acctId || req.headers['x-acctno'];
-            const adminId = req.query.adminId || req.body.adminId || req.user?.accountAdminId;
+            const userId = req.user?.userId;
             const { leadIds } = req.body;
 
-            if (!acctId || !adminId) return res.status(400).json({ success: false, message: 'Account context required' });
+            if (!acctId || !userId) return res.status(400).json({ success: false, message: 'Account context required' });
             if (!Array.isArray(leadIds) || !leadIds.length) {
                 return res.status(400).json({ success: false, message: 'leadIds array is required' });
             }
 
-            const counts = await reminderService.getBatchReminderCounts(acctId, adminId, leadIds);
+            const counts = await reminderService.getBatchReminderCounts(acctId, leadIds);
             return res.status(200).json({ success: true, data: counts });
         } catch (err) {
             console.error('[ReminderController] getBatchReminderCounts:', err);

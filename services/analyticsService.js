@@ -142,20 +142,12 @@ class AnalyticsService {
         return expressions[aggregation] || { $sum: 1 };
     }
 
-    async saveSchema({ userId, acctId, adminId, schema }) {
-        const updateData = { schema };
-        if (adminId) {
-            updateData.adminId = adminId;
-        }
-        return performUpsert(AnalyticsSchema, { userId, acctId }, updateData);
+    async saveSchema({ userId, acctId, schema }) {
+        return performUpsert(AnalyticsSchema, { userId, acctId }, { schema });
     }
 
     async getSchema({ userId, acctId }) {
         return AnalyticsSchema.findOne({ userId, acctId }).lean();
-    }
-
-    async getSchemaByAdminId({ adminId, acctId }) {
-        return AnalyticsSchema.findOne({ adminId, acctId }).lean();
     }
 }
 

@@ -8,6 +8,7 @@ import analyticsRoutes from './routes/analyticsRoutes.js';
 import aiAnalyticsRoutes from './routes/aiAnalyticsRoutes.js';
 import accountRoutes from './routes/accountRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
+import roleRoutes from './routes/roleRoutes.js';
 import ssoAuthMiddleware from './middleware/ssoAuthMiddleware.js';
 import { apiKeyAuthMiddleware } from './middleware/apiKeyAuthMiddleware.js';
 import leadRateLimiter from './middleware/leadRateLimiter.js';
@@ -22,6 +23,11 @@ import noteRoutes     from './routes/noteRoutes.js';
 import reminderRoutes from './routes/reminderRoutes.js';
 import pushRoutes     from './routes/pushRoutes.js';
 import activityRoutes from './routes/activityRoutes.js';
+import webhookRoutes  from './routes/webhookRoutes.js';
+import mcpRoutes      from './mcp/leadAppMcpServer.js';
+import { initializeWorker as initWebhookWorker } from './queue/webhookQueue.js';
+import { registerWebhookDispatcher } from './services/webhookService.js';
+import { seedRoles } from './models/roleModel.js';
 
 // AWS Secrets Manager - loads secrets into process.env
 const hasAWSCredentials = process.env.AWS_SECRET_MANAGER_ACCESS_KEY_ID &&
@@ -83,8 +89,15 @@ app.use(express.urlencoded({ extended: true }));
 
 // Connect to MongoDB
 mongoConnector.connect()
-  .then(() => {
+  .then(async () => {
     console.log('MongoDB connected successfully');
+    // Seed the default roles (idempotent) so access-level changes have a source of truth
+    try {
+      await seedRoles();
+      console.log('[Startup] ✓ Default roles seeded');
+    } catch (err) {
+      console.error('[Startup] ⚠ Failed to seed roles:', err.message);
+    }
   })
   .catch((err) => {
     console.error('MongoDB connection error:', err);
@@ -101,6 +114,9 @@ mongoConnector.connect()
 
     initLeadWorker();
     initReminderWorker();
+    initWebhookWorker();
+    // Bridge domain events (lead created/assigned/unassigned) → webhook delivery queue
+    registerWebhookDispatcher();
     console.log('[Startup] Queue workers started | active queues:', getRegisteredQueues().join(', '));
 
     // ── Redis pub/sub subscriber for SSE in-app notification delivery ──
@@ -111,10 +127,10 @@ mongoConnector.connect()
     await redisSubscriber.psubscribe('reminder:notify:*');
     redisSubscriber.on('pmessage', (_pattern, channel, message) => {
       try {
-        // channel = "reminder:notify:{adminId}"
-        const adminId = channel.split(':')[2];
+        // channel = "reminder:notify:{userId}"
+        const userId = channel.split(':')[2];
         const payload = JSON.parse(message);
-        deliverToSSEClients(adminId, payload);
+        deliverToSSEClients(userId, payload);
       } catch (err) {
         console.error('[SSE] Failed to deliver pub/sub message:', err.message);
       }
@@ -156,6 +172,9 @@ app.use('/api/ui/accounts', ssoAuthMiddleware, accountRoutes);
 // Admin Routes — SSO required
 app.use('/api/ui/admins', ssoAuthMiddleware, adminRoutes);
 
+// Roles — SSO required
+app.use('/api/ui/roles', ssoAuthMiddleware, roleRoutes);
+
 // API key path: auth → rate limit (100 req/60s per acctId) → routes
 // Rate limiter runs after auth so req.acctId is already set.
 app.use('/api/leads', apiKeyAuthMiddleware, leadRateLimiter, leadRoutes);
@@ -170,6 +189,12 @@ app.use('/api/ui/leads/:leadId/reminders', ssoAuthMiddleware, reminderRoutes);
 
 // Batch activity counts (notes + reminders per lead, for grid highlights)
 app.use('/api/ui/activity', ssoAuthMiddleware, activityRoutes);
+
+// Webhook configuration + recent deliveries — SSO required
+app.use('/api/ui/webhooks', ssoAuthMiddleware, webhookRoutes);
+
+// MCP endpoint (admin management tools) — SSO required
+app.use('/api/ui/mcp', ssoAuthMiddleware, mcpRoutes);
 
 // Push subscriptions, SSE stream, and bell inbox
 app.use('/api/ui/push', ssoAuthMiddleware, pushRoutes);

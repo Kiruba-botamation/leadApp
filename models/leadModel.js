@@ -26,6 +26,9 @@ leadSchema.index({ acctId: 1, updatedAt: -1 });
 leadSchema.index({ acctId: 1, createdAt: -1 });
 leadSchema.index({ acctId: 1, categoryId: 1, createdAt: -1 });
 
+// Per-admin visibility: non-superadmins only see leads assigned to them (responsible = userId)
+leadSchema.index({ acctId: 1, responsible: 1, updatedAt: -1 });
+
 const Lead = mongoose.model('Lead', leadSchema);
 
 export default Lead;

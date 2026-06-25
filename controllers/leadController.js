@@ -110,7 +110,10 @@ class LeadController {
                 search,
                 acctId,
                 categoryId,
-                fieldFilters
+                fieldFilters,
+                // Per-admin visibility — superadmins see all, others see only their assigned leads
+                accessLevel:  req.user?.accessLevel ?? null,
+                userId:       req.user?.userId ?? null
             });
 
             return res.status(200).json({ success: true, message: 'Leads retrieved successfully', ...result });
@@ -168,7 +171,10 @@ class LeadController {
                 return res.status(403).json({ success: false, message: 'Access denied: lead does not belong to your account' });
             }
 
-            const updated = await leadService.updateLead(id, updateData);
+            const updated = await leadService.updateLead(id, updateData, {
+                acctId: callerAcctId,
+                prevResponsible: existing.responsible ?? null
+            });
             return res.status(200).json({ success: true, message: 'Lead updated successfully', data: updated });
         } catch (error) {
             console.error('[LeadController] updateLead:', error);

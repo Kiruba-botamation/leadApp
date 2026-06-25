@@ -3,8 +3,7 @@
  *
  * Handles HTTP requests for lead notes.
  * Auth is enforced by ssoAuthMiddleware (mounted in server.js).
- * Admin identity is resolved from req.user.accountAdminId (account_admins._id,
- * enriched by ssoAuthMiddleware via email match against account_admins collection).
+ * The note author is the lead-app userId from the authenticated session (req.user.userId).
  */
 import noteService from '../services/noteService.js';
 
@@ -37,18 +36,16 @@ class NoteController {
         try {
             const { leadId }    = req.params;
             const acctId        = req.query.acctId || req.headers['x-acctno'];
-            // Prefer adminId sent explicitly by the frontend (account-specific _id from localStorage).
-            // Fall back to middleware-resolved accountAdminId (requires acctId to be accurate).
-            const adminId       = req.body.adminId || req.user?.accountAdminId;
+            const userId        = req.user?.userId;
             const { description } = req.body;
 
             if (!acctId)      return res.status(400).json({ success: false, message: 'Account context required' });
-            if (!adminId)     return res.status(400).json({ success: false, message: 'Admin identity required' });
+            if (!userId)      return res.status(400).json({ success: false, message: 'User identity required' });
             if (!description?.trim()) {
                 return res.status(400).json({ success: false, message: 'description is required' });
             }
 
-            const note = await noteService.createNote(acctId, adminId, leadId, description.trim());
+            const note = await noteService.createNote(acctId, userId, leadId, description.trim(), req.user?.email || null);
             return res.status(201).json({ success: true, message: 'Note created', data: note });
         } catch (err) {
             console.error('[NoteController] createNote:', err);
@@ -64,15 +61,15 @@ class NoteController {
     async updateNote(req, res) {
         try {
             const { noteId }    = req.params;
-            const adminId       = req.body.adminId || req.user?.accountAdminId;
+            const userId        = req.user?.userId;
             const { description } = req.body;
 
-            if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+            if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
             if (!description?.trim()) {
                 return res.status(400).json({ success: false, message: 'description is required' });
             }
 
-            const updated = await noteService.updateNote(noteId, adminId, description.trim());
+            const updated = await noteService.updateNote(noteId, userId, description.trim());
             if (!updated) {
                 return res.status(404).json({ success: false, message: 'Note not found or you do not have permission to edit it' });
             }
@@ -91,11 +88,11 @@ class NoteController {
     async deleteNote(req, res) {
         try {
             const { noteId } = req.params;
-            const adminId    = req.body.adminId || req.user?.accountAdminId;
+            const userId     = req.user?.userId;
 
-            if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required' });
+            if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            const deleted = await noteService.deleteNote(noteId, adminId);
+            const deleted = await noteService.deleteNote(noteId, userId);
             if (!deleted) {
                 return res.status(404).json({ success: false, message: 'Note not found or you do not have permission to delete it' });
             }

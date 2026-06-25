@@ -2,44 +2,55 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import AccountAdmin from '../models/accountAdminModel.js';
 
-// ── In-memory cache: 'email:acctId' → { id, exp } ───────────────────────────
+// ── In-memory cache: 'userId:acctId' → { accessLevel, exp } ──────────────────
 // Avoids a DB round-trip on every request while keeping identity fresh.
-const _adminIdCache = new Map();
-const ADMIN_ID_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const _adminCache = new Map();
+const ADMIN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/** Invalidate the cached admin entry for a user/account (call after access-level changes). */
+export function invalidateAdminCache(userId, acctId) {
+    _adminCache.delete(`${userId}:${acctId}`);
+}
 
 /**
- * Resolves the account_admins._id for the logged-in user.
- * Sets user.accountAdminId — used as fallback adminId in lead notes and reminders.
+ * Resolves the logged-in user's admin status for the given account.
  *
- * Requires acctId — without it we cannot safely identify which account_admins
- * record belongs to this user (same email can exist in multiple accounts).
- * When acctId is absent, accountAdminId is set to null and the caller must
- * supply adminId directly in the request body.
+ * Sets on req.user:
+ *   - isAdmin: whether the user is an admin of this account
+ *   - accessLevel: 'superadmin' | 'admin' | null (null = not an admin here)
  *
- * acctId is intentionally NOT stored on req.user — it always comes from
- * the request (query param / body / path param) so account switching works.
+ * Identity is keyed by userId (the canonical reference) scoped to acctId, since
+ * the same user can be an admin of multiple accounts with different access levels.
+ * When acctId is absent we cannot identify the account, so accessLevel is null.
+ *
+ * acctId is intentionally NOT stored on req.user — it always comes from the
+ * request (query param / body / path param) so account switching works.
  */
 async function enrichWithAccountAdminId(user, acctId) {
-    if (!user?.email || !acctId) {
-        user.accountAdminId = null;
+    if (!user?.userId || !acctId) {
+        user.isAdmin = false;
+        user.accessLevel = null;
         return;
     }
 
-    const key    = `${user.email}:${acctId}`;
-    const cached = _adminIdCache.get(key);
+    const key    = `${user.userId}:${acctId}`;
+    const cached = _adminCache.get(key);
     if (cached && cached.exp > Date.now()) {
-        user.accountAdminId = cached.id;
+        user.isAdmin = cached.accessLevel != null;
+        user.accessLevel = cached.accessLevel;
         return;
     }
 
     try {
-        const rec = await AccountAdmin.findOne({ email: user.email, acctId }, { _id: 1 }).lean();
-        const id  = rec?._id ?? null;
-        _adminIdCache.set(key, { id, exp: Date.now() + ADMIN_ID_CACHE_TTL });
-        user.accountAdminId = id;
+        const rec = await AccountAdmin.findOne({ userId: user.userId, acctId }, { accessLevel: 1 }).lean();
+        const accessLevel = rec?.accessLevel ?? null;
+        _adminCache.set(key, { accessLevel, exp: Date.now() + ADMIN_CACHE_TTL });
+        user.isAdmin = accessLevel != null;
+        user.accessLevel = accessLevel;
     } catch (err) {
         console.warn('[SSO] enrichWithAccountAdminId error:', err.message);
-        user.accountAdminId = null;
+        user.isAdmin = false;
+        user.accessLevel = null;
     }
 }
 

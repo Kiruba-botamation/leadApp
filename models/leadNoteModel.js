@@ -5,7 +5,7 @@ import mongoose from 'mongoose';
  *
  * Stores internal notes written by admins for a specific lead.
  * Any number of notes can exist per lead.
- * Only the creator (adminId) may edit or delete their own note.
+ * Only the creator (userId) may edit or delete their own note.
  * Notes are listed latest-first via the createdAt index.
  */
 const leadNoteSchema = new mongoose.Schema(
@@ -20,10 +20,15 @@ const leadNoteSchema = new mongoose.Schema(
             required: true,
             index: true
         },
-        /** The admin who created this note (account_admins._id) */
-        adminId: {
+        /** The lead-app user who created this note (account_admins.userId) */
+        userId: {
             type: String,
             required: true
+        },
+        /** Author display name snapshot — shown when the admin record is later removed */
+        userName: {
+            type: String,
+            default: null
         },
         /** The lead this note belongs to (leads._id) */
         leadId: {
@@ -46,8 +51,8 @@ const leadNoteSchema = new mongoose.Schema(
 // Primary query: list notes for a lead, latest first
 leadNoteSchema.index({ acctId: 1, leadId: 1, createdAt: -1 });
 
-// Admin-scoped queries (e.g. "show all notes by this admin")
-leadNoteSchema.index({ acctId: 1, adminId: 1 });
+// User-scoped queries (e.g. "show all notes by this user")
+leadNoteSchema.index({ acctId: 1, userId: 1 });
 
 const LeadNote = mongoose.model('LeadNote', leadNoteSchema);
 

@@ -3,8 +3,8 @@ import mongoose from 'mongoose';
 /**
  * Push Subscriptions — `push_subscriptions` collection
  *
- * Stores browser Web Push API subscriptions per admin.
- * One admin may have multiple subscriptions (different browsers/devices).
+ * Stores browser Web Push API subscriptions per user.
+ * One user may have multiple subscriptions (different browsers/devices).
  * Expired subscriptions (410/404 from push service) are auto-deleted
  * by the browserPush channel module.
  */
@@ -14,8 +14,8 @@ const pushSubscriptionSchema = new mongoose.Schema(
             type: String,
             default: () => new mongoose.Types.ObjectId().toHexString()
         },
-        /** The admin this subscription belongs to (account_admins._id) */
-        adminId: {
+        /** The lead-app user this subscription belongs to (account_admins.userId) */
+        userId: {
             type: String,
             required: true
         },
@@ -37,8 +37,8 @@ const pushSubscriptionSchema = new mongoose.Schema(
     }
 );
 
-// All subscriptions for an admin (used when sending push to all their devices)
-pushSubscriptionSchema.index({ adminId: 1 });
+// All subscriptions for a user (used when sending push to all their devices)
+pushSubscriptionSchema.index({ userId: 1 });
 
 const PushSubscription = mongoose.model('PushSubscription', pushSubscriptionSchema);
 

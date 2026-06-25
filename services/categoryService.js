@@ -8,12 +8,28 @@ import { performGet, perfomDataExistanceCheck, performCount } from '../config/mo
  */
 export const SYSTEM_FIELDS = [
     {
-        label:    'Id',
-        field:    'id',
+        label:    'Name',
+        field:    'name',
         type:     'text',
         system:   true,
         required: true,
-        tooltip:  'Mandatory — must be provided when pushing data via API'
+        tooltip:  'Mandatory — full name of the lead'
+    },
+    {
+        label:    'Phone',
+        field:    'phone',
+        type:     'text',
+        system:   true,
+        required: true,
+        tooltip:  'Mandatory — phone number of the lead'
+    },
+    {
+        label:    'Email',
+        field:    'email',
+        type:     'text',
+        system:   true,
+        required: false,
+        tooltip:  'Optional — email address of the lead'
     },
     {
         label:    'Responsible',

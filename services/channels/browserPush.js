@@ -32,16 +32,16 @@ const initVapid = () => {
 /**
  * Send a browser push notification to all subscriptions for an admin.
  *
- * @param {string} adminId
+ * @param {string} userId
  * @param {object} payload - { reminderId, description, leadId, type, leadName, leadPhone }
  */
-export const send = async (adminId, payload) => {
+export const send = async (userId, payload) => {
     initVapid();
     if (!vapidInitialised) return;
 
-    const subscriptions = await PushSubscription.find({ adminId });
+    const subscriptions = await PushSubscription.find({ userId });
     if (!subscriptions.length) {
-        logger.info(`[BrowserPush] No subscriptions for adminId=${adminId}`);
+        logger.info(`[BrowserPush] No subscriptions for userId=${userId}`);
         return;
     }
 
@@ -82,9 +82,9 @@ export const send = async (adminId, payload) => {
 
     if (deleteIds.length) {
         await PushSubscription.deleteMany({ _id: { $in: deleteIds } });
-        logger.info(`[BrowserPush] Removed ${deleteIds.length} expired subscription(s) for adminId=${adminId}`);
+        logger.info(`[BrowserPush] Removed ${deleteIds.length} expired subscription(s) for userId=${userId}`);
     }
 
     const sent = results.filter(r => r.status === 'fulfilled').length;
-    logger.info(`[BrowserPush] Sent ${sent}/${subscriptions.length} push(es) for adminId=${adminId}`);
+    logger.info(`[BrowserPush] Sent ${sent}/${subscriptions.length} push(es) for userId=${userId}`);
 };

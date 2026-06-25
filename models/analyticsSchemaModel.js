@@ -14,10 +14,6 @@ const analyticsSchemaModel = new mongoose.Schema(
             type: String,
             required: true
         },
-        adminId: {
-            type: String,
-            required: false
-        },
         schema: {
             type: mongoose.Schema.Types.Mixed,
             default: {}
@@ -25,6 +21,9 @@ const analyticsSchemaModel = new mongoose.Schema(
     },
     { timestamps: true, collection: 'analytics' }
 );
+
+// One saved dashboard per user per account — also serves the view-as lookup by userId
+analyticsSchemaModel.index({ userId: 1, acctId: 1 }, { unique: true });
 
 const AnalyticsSchema = mongoose.model('AnalyticsSchema', analyticsSchemaModel);
 

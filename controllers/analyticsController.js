@@ -7,13 +7,13 @@ class AnalyticsController {
    */
   async saveSchema(req, res) {
     try {
-      const { userId, acctId, adminId, schema } = req.body;
+      const { userId, acctId, schema } = req.body;
 
       if (!userId || !acctId || !schema) {
         return res.status(400).json({ success: false, message: 'userId, acctId, and schema are required' });
       }
 
-      const result = await analyticsService.saveSchema({ userId, acctId, adminId, schema });
+      const result = await analyticsService.saveSchema({ userId, acctId, schema });
 
       return res.status(200).json({ success: true, message: 'Schema saved successfully', data: result });
     } catch (error) {
@@ -34,18 +34,13 @@ class AnalyticsController {
         return res.status(400).json({ success: false, message: 'acctId is required' });
       }
 
-      // In view-as mode, selectedUserId/viewingAs represents the admin context.
-      const effectiveAdminId = selectedUserId || viewingAs || null;
+      // Schemas are keyed by userId. In view-as mode, selectedUserId/viewingAs is
+      // the target user's userId; otherwise load the caller's own schema.
+      const effectiveUserId = selectedUserId || viewingAs || userId;
 
-      let result = null;
-      if (effectiveAdminId) {
-        result = await analyticsService.getSchemaByAdminId({ adminId: effectiveAdminId, acctId });
-      }
-
-      // Backward-compatible fallback for older records keyed by userId.
-      if (!result && userId) {
-        result = await analyticsService.getSchema({ userId, acctId });
-      }
+      const result = effectiveUserId
+        ? await analyticsService.getSchema({ userId: effectiveUserId, acctId })
+        : null;
 
       return res.status(200).json({ success: true, data: result || null });
     } catch (error) {
@@ -69,8 +64,8 @@ class AnalyticsController {
         });
       }
 
-      // Get the schema by adminId (selectedUserId is the adminId)
-      const result = await analyticsService.getSchemaByAdminId({ adminId: selectedUserId, acctId });
+      // Load the selected user's saved dashboard (schemas are keyed by userId)
+      const result = await analyticsService.getSchema({ userId: selectedUserId, acctId });
 
       return res.status(200).json({
         success: true,
