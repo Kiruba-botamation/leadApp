@@ -175,7 +175,9 @@ class LeadController {
 
             const updated = await leadService.updateLead(id, updateData, {
                 acctId: callerAcctId,
-                prevResponsible: existing.responsible ?? null
+                prevResponsible: existing.responsible ?? null,
+                prevStage: existing.stage ?? null,
+                categoryId: existing.categoryId ?? null
             });
             return res.status(200).json({ success: true, message: 'Lead updated successfully', data: updated });
         } catch (error) {

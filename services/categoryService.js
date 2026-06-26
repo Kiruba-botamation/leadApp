@@ -41,6 +41,37 @@ export const SYSTEM_FIELDS = [
     }
 ];
 
+/**
+ * The `stage` system field. Kept OUT of SYSTEM_FIELDS (so the legacy field-position
+ * logic for name/phone/email/responsible is untouched) but still an allowed lead field
+ * and a selectable analytics axis. Stage values reference a per-category stage id.
+ */
+export const STAGE_FIELD = {
+    label:    'Stage',
+    field:    'stage',
+    type:     'stage',
+    system:   true,
+    required: false,
+    tooltip:  'Optional — pipeline stage of the lead'
+};
+
+/** Default colour for the seeded "New" stage and any stage saved without a valid colour. */
+export const DEFAULT_STAGE_COLOR = '#4f46e5';
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** Coerce a colour to a valid 6-digit hex, falling back to the default. */
+function normaliseColor(color) {
+    return typeof color === 'string' && HEX_COLOR_RE.test(color.trim())
+        ? color.trim().toLowerCase()
+        : DEFAULT_STAGE_COLOR;
+}
+
+/** Stages sorted by display order (tiebreak: lowest id). */
+function sortStages(stages = []) {
+    return [...stages].sort((a, b) => (a.order - b.order) || (a.id - b.id));
+}
+
 /** Normalise a category name: lowercase, spaces → underscore, strip non-alphanumeric-underscore */
 export function normaliseCategoryName(name) {
     return name
@@ -66,7 +97,8 @@ class CategoryService {
         return (result.data || []).map(c => ({
             _id:          c._id,
             categoryName: c.categoryName,
-            default:      c.default
+            default:      c.default,
+            stages:       sortStages(c.stages)
         }));
     }
 
@@ -98,6 +130,7 @@ class CategoryService {
             categoryName: category.categoryName,
             default:      category.default,
             fields,
+            stages:       sortStages(category.stages),
         };
     }
 
@@ -128,7 +161,10 @@ class CategoryService {
             acctId,
             categoryName: normalisedName,
             default:      isDefault,
-            fields:       validatedFields
+            fields:       validatedFields,
+            // Every category starts with one mandatory default stage.
+            stages:       [{ id: 1, name: 'New', color: DEFAULT_STAGE_COLOR, order: 0 }],
+            nextStageId:  2
         });
 
         // Re-read to apply same logic as getCategoryFields
@@ -141,7 +177,8 @@ class CategoryService {
             _id:          category._id,
             categoryName: category.categoryName,
             default:      category.default,
-            fields:       allFields
+            fields:       allFields,
+            stages:       sortStages(category.stages)
         };
     }
 
@@ -195,7 +232,8 @@ class CategoryService {
             _id:          category._id,
             categoryName: category.categoryName,
             default:      category.default,
-            fields:       allFields
+            fields:       allFields,
+            stages:       sortStages(category.stages)
         };
     }
 
@@ -250,7 +288,7 @@ class CategoryService {
 
         const userFields   = (category.fields || []).map(f => f.field);
         const systemFields = SYSTEM_FIELDS.map(f => f.field);
-        return new Set([...systemFields, ...userFields]);
+        return new Set([...systemFields, STAGE_FIELD.field, ...userFields]);
     }
 
     /**
@@ -260,7 +298,157 @@ class CategoryService {
         return LeadCategory.findOne({ acctId, categoryName }).lean();
     }
 
+    // ── Stage lifecycle ──────────────────────────────────────────────────────
+
+    /**
+     * The id of a category's "first" stage (lowest order, tiebreak lowest id).
+     * Used as the default stage when a lead is created without one, and as the
+     * reassignment target when a stage is deleted. Returns null if no stages.
+     * Accepts a plain category doc (lean) or a Mongoose document.
+     */
+    getFirstStageId(categoryDoc) {
+        const sorted = sortStages(categoryDoc?.stages);
+        return sorted.length ? sorted[0].id : null;
+    }
+
+    /** Build an { [stageId]: name } map for a category (analytics / MCP / webhooks). */
+    async resolveStageMap(acctId, categoryId) {
+        const category = await LeadCategory.findOne({ _id: categoryId, acctId }, { stages: 1 }).lean();
+        const map = {};
+        for (const s of category?.stages || []) map[s.id] = s.name;
+        return map;
+    }
+
+    /** Add a stage to a category. Returns the updated, sorted stage list. */
+    async addStage(acctId, categoryId, { name, color } = {}) {
+        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+
+        const trimmed = (name || '').trim();
+        if (!trimmed) {
+            const err = new Error('Stage name is required');
+            err.statusCode = 400;
+            throw err;
+        }
+        this._assertStageNameUnique(category.stages, trimmed);
+
+        const id    = category.nextStageId || ((Math.max(0, ...category.stages.map(s => s.id)) ) + 1);
+        const order = category.stages.length
+            ? Math.max(...category.stages.map(s => s.order)) + 1
+            : 0;
+
+        category.stages.push({ id, name: trimmed, color: normaliseColor(color), order });
+        category.nextStageId = id + 1;
+        await category.save();
+
+        return sortStages(category.stages);
+    }
+
+    /** Update a stage's name / colour / order. Returns the updated, sorted stage list. */
+    async updateStage(acctId, categoryId, stageId, { name, color, order } = {}) {
+        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+
+        const stage = category.stages.find(s => s.id === Number(stageId));
+        if (!stage) {
+            const err = new Error('Stage not found');
+            err.statusCode = 404;
+            throw err;
+        }
+
+        if (name !== undefined) {
+            const trimmed = (name || '').trim();
+            if (!trimmed) {
+                const err = new Error('Stage name cannot be empty');
+                err.statusCode = 400;
+                throw err;
+            }
+            this._assertStageNameUnique(category.stages, trimmed, stage.id);
+            stage.name = trimmed;
+        }
+        if (color !== undefined) stage.color = normaliseColor(color);
+        if (order !== undefined && !Number.isNaN(Number(order))) stage.order = Number(order);
+
+        await category.save();
+        return sortStages(category.stages);
+    }
+
+    /** Reorder stages to match the given array of stage ids. Returns the sorted list. */
+    async reorderStages(acctId, categoryId, orderedIds = []) {
+        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+
+        const position = new Map(orderedIds.map((id, idx) => [Number(id), idx]));
+        category.stages.forEach(s => {
+            if (position.has(s.id)) s.order = position.get(s.id);
+        });
+
+        await category.save();
+        return sortStages(category.stages);
+    }
+
+    /**
+     * Delete a stage. Leads in that stage are reassigned to the (remaining) first
+     * stage. At least one stage must always remain. No per-lead webhook is fired
+     * for the bulk reassignment.
+     *
+     * Returns { stages, reassignedCount, reassignedToStageId }.
+     */
+    async deleteStage(acctId, categoryId, stageId) {
+        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+
+        const id = Number(stageId);
+        if (!category.stages.some(s => s.id === id)) {
+            const err = new Error('Stage not found');
+            err.statusCode = 404;
+            throw err;
+        }
+        if (category.stages.length <= 1) {
+            const err = new Error('At least one stage is required per category');
+            err.statusCode = 400;
+            throw err;
+        }
+
+        // First stage among the ones that will remain.
+        const remaining   = sortStages(category.stages.filter(s => s.id !== id));
+        const targetId    = remaining[0].id;
+
+        const reassign = await Lead.updateMany(
+            { acctId, categoryId, stage: id },
+            { $set: { stage: targetId } }
+        );
+
+        category.stages = remaining;
+        await category.save();
+
+        return {
+            stages:              sortStages(category.stages),
+            reassignedCount:     reassign.modifiedCount ?? 0,
+            reassignedToStageId: targetId
+        };
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
+
+    /** Load a category as a Mongoose doc for stage mutation, or throw 404. */
+    async _loadCategoryForStageEdit(acctId, categoryId) {
+        const category = await LeadCategory.findOne({ _id: categoryId, acctId });
+        if (!category) {
+            const err = new Error('Category not found');
+            err.statusCode = 404;
+            throw err;
+        }
+        if (!Array.isArray(category.stages)) category.stages = [];
+        return category;
+    }
+
+    /** Throw 409 if `name` collides (case-insensitive) with another stage. */
+    _assertStageNameUnique(stages, name, exceptId = null) {
+        const lower = name.toLowerCase();
+        const clash = stages.some(s => s.id !== exceptId && s.name.toLowerCase() === lower);
+        if (clash) {
+            const err = new Error(`A stage named "${name}" already exists in this category`);
+            err.statusCode = 409;
+            throw err;
+        }
+    }
 
     /**
      * Validate and normalise an array of user-supplied column definitions.

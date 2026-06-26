@@ -107,6 +107,87 @@ class CategoryController {
         }
     }
 
+    // ── Stage management ─────────────────────────────────────────────────────
+
+    /**
+     * POST /api/ui/leads/categories/:categoryId/stages
+     * Body: { name, color? }
+     */
+    async addStage(req, res) {
+        try {
+            const acctId = this._resolveAcctId(req);
+            if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
+
+            const { categoryId } = req.params;
+            const { name, color } = req.body;
+            const stages = await categoryService.addStage(acctId, categoryId, { name, color });
+            return res.status(201).json({ success: true, message: 'Stage added', data: stages });
+        } catch (error) {
+            console.error('[CategoryController] addStage:', error);
+            return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+        }
+    }
+
+    /**
+     * PUT /api/ui/leads/categories/:categoryId/stages/reorder
+     * Body: { orderedIds: [Number] }
+     */
+    async reorderStages(req, res) {
+        try {
+            const acctId = this._resolveAcctId(req);
+            if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
+
+            const { categoryId } = req.params;
+            const { orderedIds = [] } = req.body;
+            const stages = await categoryService.reorderStages(acctId, categoryId, orderedIds);
+            return res.status(200).json({ success: true, message: 'Stages reordered', data: stages });
+        } catch (error) {
+            console.error('[CategoryController] reorderStages:', error);
+            return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+        }
+    }
+
+    /**
+     * PUT /api/ui/leads/categories/:categoryId/stages/:stageId
+     * Body: { name?, color?, order? }
+     */
+    async updateStage(req, res) {
+        try {
+            const acctId = this._resolveAcctId(req);
+            if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
+
+            const { categoryId, stageId } = req.params;
+            const { name, color, order } = req.body;
+            const stages = await categoryService.updateStage(acctId, categoryId, stageId, { name, color, order });
+            return res.status(200).json({ success: true, message: 'Stage updated', data: stages });
+        } catch (error) {
+            console.error('[CategoryController] updateStage:', error);
+            return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+        }
+    }
+
+    /**
+     * DELETE /api/ui/leads/categories/:categoryId/stages/:stageId
+     * Reassigns leads in the stage to the first remaining stage.
+     */
+    async deleteStage(req, res) {
+        try {
+            const acctId = this._resolveAcctId(req);
+            if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
+
+            const { categoryId, stageId } = req.params;
+            const result = await categoryService.deleteStage(acctId, categoryId, stageId);
+            return res.status(200).json({
+                success: true,
+                message: `Stage deleted${result.reassignedCount ? `; ${result.reassignedCount} lead(s) reassigned` : ''}`,
+                data:    result
+            });
+        } catch (error) {
+            console.error('[CategoryController] deleteStage:', error);
+            return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+        }
+    }
+
     /**
      * DELETE /api/ui/leads/categories/:categoryId
      */

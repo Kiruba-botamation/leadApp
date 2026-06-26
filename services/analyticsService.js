@@ -1,9 +1,15 @@
 import Lead from '../models/leadModel.js';
+import LeadCategory from '../models/leadCategoryModel.js';
+import AccountAdmin from '../models/accountAdminModel.js';
 import AnalyticsSchema from '../models/analyticsSchemaModel.js';
 import { performAggregate, performUpsert } from '../config/mongoConnector.js';
 
 // Fields that store timestamps and support granularity bucketing
 const DATE_AXIS_FIELDS = ['createdAt', 'updatedAt'];
+
+// Axes whose raw stored value is an id that must be resolved to a human label
+// (stage id → stage name, responsible userId → admin full name) before charting.
+const NAME_RESOLVED_FIELDS = ['stage', 'responsible'];
 
 // Maps granularity keys to MongoDB $dateToString format strings and sort-friendly output
 const GRANULARITY_FORMAT = {
@@ -110,11 +116,69 @@ class AnalyticsService {
                 });
             }
 
-            return await performAggregate(Lead, pipeline);
+            const rows = await performAggregate(Lead, pipeline);
+            return await this._enrichNames(rows, { xAxis, zAxis, acctId, categoryId });
         } catch (error) {
             console.error('Error in getChartData:', error);
             throw new Error(`Failed to retrieve chart data: ${error.message}`);
         }
+    }
+
+    /**
+     * Resolve id-valued axes (stage, responsible) to human labels in the chart rows.
+     * Grouping stays keyed on the raw id (stable, exact counts) — only the output
+     * `name` / `zKey` labels are replaced. Mutates and returns the same rows.
+     * @private
+     */
+    async _enrichNames(rows, { xAxis, zAxis, acctId, categoryId }) {
+        if (!Array.isArray(rows) || rows.length === 0) return rows;
+
+        const needStage =
+            (xAxis === 'stage' || zAxis === 'stage');
+        const needResponsible =
+            (xAxis === 'responsible' || zAxis === 'responsible');
+        if (!needStage && !needResponsible) return rows;
+
+        // Build a stage id→name map (category-scoped).
+        let stageMap = {};
+        if (needStage && categoryId) {
+            const cat = await LeadCategory.findOne({ _id: categoryId, acctId }, { stages: 1 }).lean();
+            for (const s of cat?.stages || []) stageMap[s.id] = s.name;
+        }
+
+        // Build a responsible userId→"First Last" map from the ids actually present.
+        let adminMap = {};
+        if (needResponsible) {
+            const ids = new Set();
+            for (const r of rows) {
+                if (xAxis === 'responsible' && r.name !== undefined && r.name !== null && r.name !== '') ids.add(String(r.name));
+                if (zAxis === 'responsible' && r.zKey !== undefined && r.zKey !== null && r.zKey !== '') ids.add(String(r.zKey));
+            }
+            if (ids.size) {
+                const admins = await AccountAdmin.find(
+                    { acctId, userId: { $in: [...ids] } },
+                    { userId: 1, firstName: 1, lastName: 1 }
+                ).lean();
+                for (const a of admins) {
+                    adminMap[String(a.userId)] = [a.firstName, a.lastName].filter(Boolean).join(' ').trim() || 'Unknown';
+                }
+            }
+        }
+
+        const labelFor = (field, raw) => {
+            if (field === 'stage') {
+                return stageMap[raw] ?? (raw === null || raw === undefined || raw === '' ? 'No stage' : 'Unknown');
+            }
+            // responsible
+            if (raw === null || raw === undefined || raw === '') return 'Unassigned';
+            return adminMap[String(raw)] ?? 'Unknown';
+        };
+
+        for (const r of rows) {
+            if (NAME_RESOLVED_FIELDS.includes(xAxis)) r.name = labelFor(xAxis, r.name);
+            if (zAxis && NAME_RESOLVED_FIELDS.includes(zAxis)) r.zKey = labelFor(zAxis, r.zKey);
+        }
+        return rows;
     }
 
     /**

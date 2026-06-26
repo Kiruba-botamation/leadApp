@@ -17,12 +17,22 @@ import express from 'express';
 import { getAdminsFromDb, setAdminAccessLevel } from '../services/adminService.js';
 import AccountAdmin from '../models/accountAdminModel.js';
 import Role from '../models/roleModel.js';
+import Lead from '../models/leadModel.js';
+import LeadCategory from '../models/leadCategoryModel.js';
+import { normaliseCategoryName } from '../services/categoryService.js';
 import { invalidateAdminCache } from '../middleware/ssoAuthMiddleware.js';
+import { checkRateLimit } from '../utils/rateLimit.js';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
 
 const PROTOCOL_VERSION = '2024-11-05';
+
+// ── Per-account MCP rate limiter (configurable via env) ─────────────────────────
+const MCP_RATE_LIMIT_MAX       = parseInt(process.env.LEAD_MCP_RATE_LIMIT_MAX ?? '100', 10);
+const MCP_RATE_LIMIT_WINDOW_S  = parseInt(process.env.LEAD_MCP_RATE_LIMIT_WINDOW_S ?? '60', 10);
+const MCP_RATE_LIMIT_FAIL_OPEN = (process.env.LEAD_MCP_RATE_LIMIT_FAIL_OPEN ?? 'true') !== 'false';
+const MCP_RATE_LIMIT_PREFIX    = 'ratelimit:mcp:acct:';
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 const TOOLS = [
@@ -52,6 +62,36 @@ const TOOLS = [
             },
             required: ['acctId', 'chatbotAdminId', 'accessLevel']
         }
+    },
+    {
+        name: 'get_stages',
+        description: 'List the lead stages of a category (id, name, colour). Use this to resolve a stage name like "hot" or "new" to its numeric stage id before calling get_lead_stats. Omit "category" to use the account default category.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                acctId: { type: 'string', description: 'The account id' },
+                category: { type: 'string', description: 'Optional category name; defaults to the account default category' }
+            },
+            required: ['acctId']
+        }
+    },
+    {
+        name: 'get_lead_stats',
+        description: 'Count leads, optionally filtered by stage and/or responsible admin and/or a created-date range. Resolve names to ids first (get_stages for stages, get_admins for admins) OR pass stageName/adminName and they will be resolved. With no stage filter, a per-stage breakdown is also returned. Examples: "how many hot leads today" (stageName="hot", dateFrom=today); "how many leads handled by Dinesh" (adminName="Dinesh").',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                acctId:      { type: 'string', description: 'The account id' },
+                category:    { type: 'string', description: 'Optional category name; defaults to the account default category' },
+                stage:       { type: 'number', description: 'Optional numeric stage id' },
+                stageName:   { type: 'string', description: 'Optional stage name (resolved to an id within the category)' },
+                responsible: { type: 'string', description: 'Optional responsible admin userId' },
+                adminName:   { type: 'string', description: 'Optional admin name (resolved to a userId)' },
+                dateFrom:    { type: 'string', description: 'Optional ISO date — count leads created on/after this' },
+                dateTo:      { type: 'string', description: 'Optional ISO date — count leads created on/before this (inclusive of the whole day)' }
+            },
+            required: ['acctId']
+        }
     }
 ];
 
@@ -61,6 +101,20 @@ const TOOLS = [
 const callerAccessLevel = async (userId, acctId) => {
     const rec = await AccountAdmin.findOne({ acctId, userId }, { accessLevel: 1 }).lean();
     return rec?.accessLevel ?? null;
+};
+
+/** Resolve a category by name (normalised) or fall back to the account default. Throws if none. */
+const resolveCategory = async (acctId, categoryName) => {
+    let category;
+    if (categoryName) {
+        category = await LeadCategory.findOne({ acctId, categoryName: normaliseCategoryName(categoryName) }).lean();
+        if (!category) throw new Error(`Category "${categoryName}" not found`);
+    } else {
+        category = await LeadCategory.findOne({ acctId, default: true }).lean()
+            || await LeadCategory.findOne({ acctId }).lean();
+        if (!category) throw new Error('No categories exist for this account');
+    }
+    return category;
 };
 
 const toolHandlers = {
@@ -95,6 +149,80 @@ const toolHandlers = {
 
         invalidateAdminCache(updated.userId, acctId);
         return { ok: true, chatbotAdminId, accessLevel, name: [updated.firstName, updated.lastName].filter(Boolean).join(' ') };
+    },
+
+    async get_stages(args) {
+        if (!args?.acctId) throw new Error('acctId is required');
+        const category = await resolveCategory(args.acctId, args.category);
+        const stages = [...(category.stages || [])].sort((a, b) => (a.order - b.order) || (a.id - b.id));
+        return {
+            category: category.categoryName,
+            stages: stages.map(s => ({ id: s.id, name: s.name, color: s.color }))
+        };
+    },
+
+    async get_lead_stats(args) {
+        if (!args?.acctId) throw new Error('acctId is required');
+        const category = await resolveCategory(args.acctId, args.category);
+
+        const match = { acctId: args.acctId, categoryId: category._id };
+
+        // ── Resolve stage (id directly, or by name within the category) ──
+        let stageId = null;
+        if (args.stage !== undefined && args.stage !== null && args.stage !== '') {
+            stageId = Number(args.stage);
+        } else if (args.stageName) {
+            const lower = String(args.stageName).toLowerCase();
+            const found = (category.stages || []).find(s => s.name.toLowerCase() === lower);
+            if (!found) throw new Error(`Stage "${args.stageName}" not found in category "${category.categoryName}"`);
+            stageId = found.id;
+        }
+        if (stageId !== null) match.stage = stageId;
+
+        // ── Resolve responsible (userId directly, or by admin name) ──
+        let responsibleId = null;
+        if (args.responsible) {
+            responsibleId = String(args.responsible);
+        } else if (args.adminName) {
+            const { admins } = await getAdminsFromDb(args.acctId, { limit: 200 });
+            const lower = String(args.adminName).toLowerCase();
+            const found = admins.find(a => [a.firstName, a.lastName].filter(Boolean).join(' ').toLowerCase().includes(lower));
+            if (!found) throw new Error(`Admin matching "${args.adminName}" not found`);
+            responsibleId = String(found.userId);
+        }
+        if (responsibleId !== null) match.responsible = responsibleId;
+
+        // ── Optional created-date range (inclusive whole day for "to") ──
+        if (args.dateFrom || args.dateTo) {
+            const range = {};
+            if (args.dateFrom) range.$gte = new Date(args.dateFrom);
+            if (args.dateTo) {
+                const to = new Date(args.dateTo);
+                to.setHours(23, 59, 59, 999);
+                range.$lte = to;
+            }
+            match.createdAt = range;
+        }
+
+        const count = await Lead.countDocuments(match);
+
+        const result = { category: category.categoryName, count };
+        if (stageId !== null) result.stage = { id: stageId, name: (category.stages || []).find(s => s.id === stageId)?.name ?? null };
+        if (responsibleId !== null) result.responsible = responsibleId;
+
+        // When not filtered by a single stage, also return a per-stage breakdown.
+        if (stageId === null) {
+            const grouped = await Lead.aggregate([
+                { $match: match },
+                { $group: { _id: '$stage', count: { $sum: 1 } } }
+            ]);
+            const nameById = new Map((category.stages || []).map(s => [s.id, s.name]));
+            result.breakdown = grouped
+                .map(g => ({ stage: g._id ?? null, name: nameById.get(g._id) ?? (g._id == null ? 'No stage' : 'Unknown'), count: g.count }))
+                .sort((a, b) => b.count - a.count);
+        }
+
+        return result;
     }
 };
 
@@ -122,6 +250,25 @@ const handleRpc = async (msg, req) => {
             const args = params?.arguments || {};
             const handler = toolHandlers[toolName];
             if (!handler) return rpcError(id, -32601, `Unknown tool: ${toolName}`);
+
+            // Per-account rate limiting. acctId arrives in the tool args (not on the
+            // HTTP request), so enforce here before invoking the handler.
+            if (args.acctId) {
+                const rl = await checkRateLimit(String(args.acctId), {
+                    max: MCP_RATE_LIMIT_MAX,
+                    windowS: MCP_RATE_LIMIT_WINDOW_S,
+                    keyPrefix: MCP_RATE_LIMIT_PREFIX,
+                    failOpen: MCP_RATE_LIMIT_FAIL_OPEN
+                });
+                if (!rl.allowed) {
+                    logger.warn(`[MCP] rate limit exceeded acctId=${args.acctId} tool=${toolName} retryAfter=${rl.retryAfter}s`);
+                    return rpcResult(id, {
+                        content: [{ type: 'text', text: `Error: Rate limit exceeded — max ${MCP_RATE_LIMIT_MAX} MCP requests per ${MCP_RATE_LIMIT_WINDOW_S}s per account. Retry after ${rl.retryAfter}s.` }],
+                        isError: true
+                    });
+                }
+            }
+
             try {
                 const data = await handler(args, req.user);
                 return rpcResult(id, {

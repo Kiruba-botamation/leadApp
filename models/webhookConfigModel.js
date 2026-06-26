@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
  * and the events it should receive. Deliveries are signed with `secret`
  * (HMAC-SHA256) so the receiver can verify authenticity.
  */
-export const WEBHOOK_EVENTS = ['lead.created', 'lead.assigned', 'lead.unassigned'];
+export const WEBHOOK_EVENTS = ['lead.created', 'lead.assigned', 'lead.unassigned', 'lead.stage_changed'];
 
 const webhookConfigSchema = new mongoose.Schema(
     {

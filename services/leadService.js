@@ -1,6 +1,7 @@
 import Lead from '../models/leadModel.js';
+import LeadCategory from '../models/leadCategoryModel.js';
 import { performUpsert, performGet, performDelete, perfomDataExistanceCheck } from '../config/mongoConnector.js';
-import categoryService, { SYSTEM_FIELDS } from './categoryService.js';
+import categoryService, { SYSTEM_FIELDS, STAGE_FIELD } from './categoryService.js';
 import { emitEvent, EVENTS } from './eventBus.js';
 
 /** Sentinel values that mean "clear the responsible / unassign". */
@@ -35,11 +36,19 @@ class LeadService {
         }
         const categoryId = categoryDoc._id;
 
-        // Build set of allowed field keys: system + user-defined
+        // Build set of allowed field keys: system + stage + user-defined
         const allowedFields = new Set([
             ...SYSTEM_FIELDS.map(f => f.field),
+            STAGE_FIELD.field,
             ...(categoryDoc.fields || []).map(f => f.field)
         ]);
+
+        // Stage resolution: valid ids, the default (first) stage, and id→name for events.
+        const stageIds        = new Set((categoryDoc.stages || []).map(s => s.id));
+        const defaultStageId  = categoryService.getFirstStageId(categoryDoc);
+        const stageNameById   = new Map((categoryDoc.stages || []).map(s => [s.id, s.name]));
+
+        const hasStageValue = (v) => v !== undefined && v !== null && v !== '';
 
         // ── 2. Validate each item in the payload ────────────────────────────
         const items = Array.isArray(leadData) ? leadData : [leadData];
@@ -52,6 +61,16 @@ class LeadService {
             }
             if (!item.phone) {
                 const err = new Error('Field "phone" is required for all leads.');
+                err.statusCode = 400;
+                throw err;
+            }
+
+            // A supplied stage must be one of the category's stage ids.
+            if (hasStageValue(item.stage) && !stageIds.has(Number(item.stage))) {
+                const err = new Error(
+                    `Unknown stage "${item.stage}" for category "${categoryName}". ` +
+                    `Use one of: ${[...stageIds].join(', ') || '(none)'}.`
+                );
                 err.statusCode = 400;
                 throw err;
             }
@@ -69,7 +88,13 @@ class LeadService {
         }
 
         // ── 3. Insert lead(s) ───────────────────────────────────────────────
-        const addMeta = (item) => ({ ...item, acctId, categoryId });
+        // Default the stage to the category's first stage when omitted; coerce to Number.
+        const addMeta = (item) => {
+            const meta = { ...item, acctId, categoryId };
+            const sid = hasStageValue(item.stage) ? Number(item.stage) : defaultStageId;
+            if (sid !== null && sid !== undefined) meta.stage = sid;
+            return meta;
+        };
 
         const buildMergeFilter = (item) => {
             if (!mergeProperties?.length) return {};
@@ -102,10 +127,15 @@ class LeadService {
             leadResult = result.doc;
         }
 
-        // Emit a created event per lead so webhooks can fan out to external systems
+        // Emit a created event per lead so webhooks can fan out to external systems.
+        // Include resolved stage details — a lead can be created directly on any stage.
         const createdLeads = Array.isArray(leadResult) ? leadResult : [leadResult];
         for (const lead of createdLeads) {
-            if (lead) emitEvent(EVENTS.LEAD_CREATED, { acctId, data: { leadId: lead._id, lead } });
+            if (!lead) continue;
+            const stage = (lead.stage !== undefined && lead.stage !== null)
+                ? { id: lead.stage, name: stageNameById.get(lead.stage) ?? null }
+                : null;
+            emitEvent(EVENTS.LEAD_CREATED, { acctId, data: { leadId: lead._id, lead, stage } });
         }
 
         return { lead: leadResult, categoryId };
@@ -234,8 +264,18 @@ class LeadService {
 
         const [aggResult] = await Lead.aggregate(pipeline).option({ allowDiskUse: true });
 
+        // Expose the category's field keys (system + stage + user-defined) so the
+        // analytics axis pickers have a source of truth. Account-wide view (no
+        // categoryId) falls back to system fields + stage only.
+        let fields = [...SYSTEM_FIELDS.map(f => f.field), STAGE_FIELD.field];
+        if (categoryId) {
+            const cat = await LeadCategory.findOne({ _id: categoryId, acctId }, { fields: 1 }).lean();
+            if (cat) fields = [...SYSTEM_FIELDS.map(f => f.field), STAGE_FIELD.field, ...(cat.fields || []).map(f => f.field)];
+        }
+
         return {
             data: aggResult?.data ?? [],
+            fields,
             pagination: {
                 total: aggResult?.total?.[0]?.count ?? 0,
                 page,
@@ -264,7 +304,7 @@ class LeadService {
      * @param {object} context  { acctId, prevResponsible }
      */
     async updateLead(id, updateData, context = {}) {
-        const { acctId, prevResponsible = null } = context;
+        const { acctId, prevResponsible = null, prevStage = null, categoryId = null } = context;
         const data = { ...updateData };
 
         const hasResponsible = Object.prototype.hasOwnProperty.call(data, 'responsible');
@@ -273,6 +313,16 @@ class LeadService {
 
         if (hasResponsible && !unassigning) {
             nextResponsible = data.responsible;
+        }
+
+        // Stage transition detection. Coerce to Number so leads store a numeric
+        // stage id (the grid filters by number) and comparisons are reliable.
+        const hasStage  = Object.prototype.hasOwnProperty.call(data, 'stage');
+        const prevStageNum = (prevStage === null || prevStage === undefined || prevStage === '') ? null : Number(prevStage);
+        let   nextStageNum = null;
+        if (hasStage) {
+            nextStageNum = (data.stage === null || data.stage === undefined || data.stage === '') ? null : Number(data.stage);
+            if (nextStageNum !== null) data.stage = nextStageNum;
         }
 
         let doc;
@@ -295,6 +345,20 @@ class LeadService {
             } else {
                 emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, data: { leadId: id, previous: prevResponsible, lead: doc } });
             }
+        }
+
+        // Emit a stage-change event when the lead actually moves to a different stage.
+        if (hasStage && nextStageNum !== null && prevStageNum !== nextStageNum) {
+            const stageMap = categoryId ? await categoryService.resolveStageMap(acctId, categoryId) : {};
+            emitEvent(EVENTS.LEAD_STAGE_CHANGED, {
+                acctId,
+                data: {
+                    leadId:   id,
+                    previous: prevStageNum === null ? null : { id: prevStageNum, name: stageMap[prevStageNum] ?? null },
+                    current:  { id: nextStageNum, name: stageMap[nextStageNum] ?? null },
+                    lead:     doc
+                }
+            });
         }
 
         return doc;

@@ -24,6 +24,20 @@ router.put('/categories/:categoryId/default', categoryController.setDefaultCateg
 /** Delete a category and all its leads */
 router.delete('/categories/:categoryId', categoryController.deleteCategory.bind(categoryController));
 
+// ── Stage management (embedded in a category) ────────────────────────────────
+
+/** Add a stage to a category */
+router.post('/categories/:categoryId/stages', categoryController.addStage.bind(categoryController));
+
+/** Reorder stages — must precede the :stageId route so "reorder" isn't read as an id */
+router.put('/categories/:categoryId/stages/reorder', categoryController.reorderStages.bind(categoryController));
+
+/** Update a stage's name / colour / order */
+router.put('/categories/:categoryId/stages/:stageId', categoryController.updateStage.bind(categoryController));
+
+/** Delete a stage (reassigns its leads to the first remaining stage) */
+router.delete('/categories/:categoryId/stages/:stageId', categoryController.deleteStage.bind(categoryController));
+
 // ── Lead CRUD ────────────────────────────────────────────────────────────────
 
 /** Get paginated leads (with optional typed fieldFilters) */

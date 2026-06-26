@@ -16,8 +16,8 @@
  *   LEAD_RATE_LIMIT_WINDOW_S   window size in seconds              (default: 60)
  *   LEAD_RATE_LIMIT_FAIL_OPEN  allow through if Redis is down      (default: true)
  */
-import { getRedisConnection } from '../config/redisConnector.js';
 import logger from '../utils/logger.js';
+import { checkRateLimit } from '../utils/rateLimit.js';
 
 // ---------------------------------------------------------------------------
 // Config — driven entirely by environment variables
@@ -30,11 +30,6 @@ const FAIL_OPEN = (process.env.LEAD_RATE_LIMIT_FAIL_OPEN ?? 'true') !== 'false';
 const REDIS_OP_TIMEOUT_MS = parseInt(process.env.LEAD_RATE_LIMIT_REDIS_TIMEOUT_MS ?? '1500', 10);
 
 const KEY_PREFIX = 'ratelimit:lead:acct:';
-
-const withTimeout = (promise, timeoutMs, message) => Promise.race([
-  promise,
-  new Promise((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs))
-]);
 
 /**
  * Express middleware — rejects requests over LEAD_RATE_LIMIT_MAX per LEAD_RATE_LIMIT_WINDOW_S
@@ -66,75 +61,39 @@ const leadRateLimiter = async (req, res, next) => {
     return res.status(400).json({ success: false, message: 'acctId is required for rate limiting' });
   }
 
-  const key = `${KEY_PREFIX}${acctId}`;
+  const { allowed, limit, remaining, resetAt, retryAfter, degraded } = await checkRateLimit(acctId, {
+    max: MAX_REQUESTS,
+    windowS: WINDOW_S,
+    keyPrefix: KEY_PREFIX,
+    failOpen: FAIL_OPEN,
+    timeoutMs: REDIS_OP_TIMEOUT_MS
+  });
 
-  try {
-    const redis = getRedisConnection();
-
-    if (redis.status !== 'ready') {
-      await withTimeout(
-        redis.connect(),
-        REDIS_OP_TIMEOUT_MS,
-        `Redis connect timed out after ${REDIS_OP_TIMEOUT_MS}ms`
-      );
-    }
-
-    // Atomic INCR + TTL check in one round-trip
-    const multi = redis.multi();
-    multi.incr(key);
-    multi.ttl(key);
-    const results = await withTimeout(
-      multi.exec(),
-      REDIS_OP_TIMEOUT_MS,
-      `Redis rate-limit command timed out after ${REDIS_OP_TIMEOUT_MS}ms`
-    );
-
-    const currentCount = results[0][1];
-    const ttl = results[1][1];
-
-    // First request in this window — set the expiry
-    if (ttl === -1) {
-      await redis.expire(key, WINDOW_S);
-    }
-
-    const windowResetAt = Math.ceil(Date.now() / 1000) + (ttl > 0 ? ttl : WINDOW_S);
-    const remaining = Math.max(0, MAX_REQUESTS - currentCount);
-
-    // Always send rate limit headers so callers can self-throttle
-    res.set({
-      'X-RateLimit-Limit': MAX_REQUESTS,
-      'X-RateLimit-Remaining': remaining,
-      'X-RateLimit-Reset': windowResetAt
+  // Redis down + fail-closed → reject with 503 rather than 429.
+  if (degraded && !allowed) {
+    return res.status(503).json({
+      success: false,
+      message: 'Rate limiting service temporarily unavailable. Please retry.'
     });
-
-    if (currentCount > MAX_REQUESTS) {
-      const retryAfter = ttl > 0 ? ttl : WINDOW_S;
-      logger.warn(`[LeadRateLimit] acctId=${acctId} exceeded ${MAX_REQUESTS} req/${WINDOW_S}s | count=${currentCount} | retryAfter=${retryAfter}s`);
-
-      return res.status(429).json({
-        success: false,
-        message: `Rate limit exceeded: max ${MAX_REQUESTS} lead requests per ${WINDOW_S} seconds per account.`,
-        retryAfter
-      });
-    }
-
-    logger.info(`[LeadRateLimit] acctId=${acctId} | count=${currentCount}/${MAX_REQUESTS} | window resets in ${ttl > 0 ? ttl : WINDOW_S}s`);
-    next();
-
-  } catch (error) {
-    logger.error(`[LeadRateLimit] Redis error for acctId=${acctId}: ${error.message}`);
-
-    if (FAIL_OPEN) {
-      // Redis is down — let the request through rather than blocking all traffic
-      logger.warn(`[LeadRateLimit] Failing open for acctId=${acctId} — Redis unavailable`);
-      next();
-    } else {
-      return res.status(503).json({
-        success: false,
-        message: 'Rate limiting service temporarily unavailable. Please retry.'
-      });
-    }
   }
+
+  // Always send rate limit headers so callers can self-throttle.
+  res.set({
+    'X-RateLimit-Limit': limit,
+    'X-RateLimit-Remaining': remaining,
+    'X-RateLimit-Reset': resetAt
+  });
+
+  if (!allowed) {
+    logger.warn(`[LeadRateLimit] acctId=${acctId} exceeded ${MAX_REQUESTS} req/${WINDOW_S}s | retryAfter=${retryAfter}s`);
+    return res.status(429).json({
+      success: false,
+      message: `Rate limit exceeded: max ${MAX_REQUESTS} lead requests per ${WINDOW_S} seconds per account.`,
+      retryAfter
+    });
+  }
+
+  next();
 };
 
 export default leadRateLimiter;

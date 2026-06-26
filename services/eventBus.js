@@ -14,6 +14,7 @@ export const EVENTS = {
     LEAD_CREATED: 'lead.created',
     LEAD_ASSIGNED: 'lead.assigned',
     LEAD_UNASSIGNED: 'lead.unassigned',
+    LEAD_STAGE_CHANGED: 'lead.stage_changed',
 };
 
 const bus = new EventEmitter();

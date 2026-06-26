@@ -33,6 +33,11 @@ LEAD_RATE_LIMIT_MAX=100
 LEAD_RATE_LIMIT_WINDOW_S=60
 LEAD_RATE_LIMIT_FAIL_OPEN=true
 
+# ── MCP Rate Limiter (per account, /api/ui/mcp) ───────────────────────────────
+LEAD_MCP_RATE_LIMIT_MAX=100
+LEAD_MCP_RATE_LIMIT_WINDOW_S=60
+LEAD_MCP_RATE_LIMIT_FAIL_OPEN=true
+
 # ── Browser Push (VAPID) ──────────────────────────────────────
 # Generated once — do NOT rotate unless you want all browser subscriptions to break.
 VAPID_PUBLIC_KEY=BBshYZwqCIzHInLwkhwt9cpgrLBeNFfr2hDlg1L9YF1GWKd3ZmWMDDLfco7Mg906JoZaur96odhpKUEAcorktRw
