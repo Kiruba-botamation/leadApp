@@ -7,7 +7,7 @@ Base paths:
 ---
 
 ## POST `/api/leads` — Create lead(s)
-## POST `/api/leads/category/:category` — Create lead(s) under a specific category
+## POST `/api/leads/:collection` — Create lead(s) under a specific collection
 
 ### Without merge — always creates a new document
 
@@ -87,15 +87,15 @@ With merge (single `bulkWrite` round-trip; each item upserted by merge fields):
 }
 ```
 
-### Category via URL param
+### Collection via URL param
 
-The `:category` segment in `POST /api/leads/category/:category` sets the lead category.  
-Alternatively, include `category` inside `data`:
+The `:collection` segment in `POST /api/leads/:collection` sets the lead collection.  
+Alternatively, include `collection` inside `data`:
 
 ```json
 {
   "data": {
-    "category": "enterprise",
+    "collection": "enterprise",
     "name": "Dinesh",
     "email": "dinesh@example.com"
   }
@@ -153,14 +153,14 @@ No request body. All parameters are query strings.
 | `limit` | number | `10` | Items per page |
 | `sortBy` | string | `updatedAt` | Field to sort by |
 | `sortOrder` | `asc` \| `desc` \| number | `-1` (desc) | Sort direction |
-| `categoryId` | string | — | Filter by category |
+| `collectionId` | string | — | Filter by collection |
 | `search` | string | — | Full-text search across all string fields |
 | any lead field | string | — | Exact field filter (applied as case-insensitive regex) |
 
 Example:
 
 ```
-GET /api/leads?page=2&limit=20&categoryId=abc123&search=chatbot
+GET /api/leads?page=2&limit=20&collectionId=abc123&search=chatbot
 ```
 
 > `createdAt` and `updatedAt` are **excluded** from the response data.
@@ -173,15 +173,15 @@ No request body. Ownership is enforced — the lead must belong to the authentic
 
 ---
 
-## GET `/api/leads/categories` — List categories
+## GET `/api/leads/collections` — List collections
 
 No request body or query parameters required.
 
 ---
 
-## PUT `/api/leads/categories/:categoryId/default` — Set default category
+## PUT `/api/leads/collections/:collectionId/default` — Set default collection
 
-No request body. Marks the specified category as the default for the account.
+No request body. Marks the specified collection as the default for the account.
 
 ---
 

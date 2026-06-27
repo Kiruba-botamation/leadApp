@@ -1,5 +1,5 @@
 import Lead from '../models/leadModel.js';
-import LeadCategory from '../models/leadCategoryModel.js';
+import LeadCollection from '../models/leadCollectionModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
 import AnalyticsSchema from '../models/analyticsSchemaModel.js';
 import { performAggregate, performUpsert } from '../config/mongoConnector.js';
@@ -30,7 +30,7 @@ class AnalyticsService {
      * @param {string|null} params.dateGranularity - 'hour'|'day'|'month'|'year' — only used when xAxis is a date field
      * @returns {Promise<Array>} - Aggregated chart data
      */
-    async getChartData({ xAxis, yAxis, zAxis, aggregation, dateFilter, acctId, categoryId, dateGranularity }) {
+    async getChartData({ xAxis, yAxis, zAxis, aggregation, dateFilter, acctId, collectionId, dateGranularity }) {
         try {
             const pipeline = [];
             const isDateAxis = DATE_AXIS_FIELDS.includes(xAxis);
@@ -38,8 +38,8 @@ class AnalyticsService {
             // ── Stage 1: $match ────────────────────────────────────────────────────────
             const matchStage = { acctId };
 
-            if (categoryId) {
-                matchStage.categoryId = categoryId;
+            if (collectionId) {
+                matchStage.collectionId = collectionId;
             }
 
             if (dateFilter && (dateFilter.from || dateFilter.to)) {
@@ -117,7 +117,7 @@ class AnalyticsService {
             }
 
             const rows = await performAggregate(Lead, pipeline);
-            return await this._enrichNames(rows, { xAxis, zAxis, acctId, categoryId });
+            return await this._enrichNames(rows, { xAxis, zAxis, acctId, collectionId });
         } catch (error) {
             console.error('Error in getChartData:', error);
             throw new Error(`Failed to retrieve chart data: ${error.message}`);
@@ -130,7 +130,7 @@ class AnalyticsService {
      * `name` / `zKey` labels are replaced. Mutates and returns the same rows.
      * @private
      */
-    async _enrichNames(rows, { xAxis, zAxis, acctId, categoryId }) {
+    async _enrichNames(rows, { xAxis, zAxis, acctId, collectionId }) {
         if (!Array.isArray(rows) || rows.length === 0) return rows;
 
         const needStage =
@@ -139,11 +139,11 @@ class AnalyticsService {
             (xAxis === 'responsible' || zAxis === 'responsible');
         if (!needStage && !needResponsible) return rows;
 
-        // Build a stage id→name map (category-scoped).
+        // Build a stage id→name map (collection-scoped).
         let stageMap = {};
-        if (needStage && categoryId) {
-            const cat = await LeadCategory.findOne({ _id: categoryId, acctId }, { stages: 1 }).lean();
-            for (const s of cat?.stages || []) stageMap[s.id] = s.name;
+        if (needStage && collectionId) {
+            const col = await LeadCollection.findOne({ _id: collectionId, acctId }, { stages: 1 }).lean();
+            for (const s of col?.stages || []) stageMap[s.id] = s.name;
         }
 
         // Build a responsible userId→"First Last" map from the ids actually present.

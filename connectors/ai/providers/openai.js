@@ -13,10 +13,10 @@ import { buildSystemPrompt, responseJsonSchema, formatHistoryForOpenAI } from '.
 /**
  * @param {string} message
  * @param {Array<{ role: 'user'|'assistant', text: string }>} history
- * @param {Array<{ _id: string, categoryName: string, fields: string[] }>} categoriesWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
  * @returns {Promise<object>}
  */
-export async function generateAnalyticsCharts(message, history = [], categoriesWithFields = []) {
+export async function generateAnalyticsCharts(message, history = [], collectionsWithFields = []) {
     // TODO: implement when switching to OpenAI
     // Example implementation:
     //
@@ -24,7 +24,7 @@ export async function generateAnalyticsCharts(message, history = [], categoriesW
     // const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     //
     // const messages = [
-    //     { role: 'system', content: buildSystemPrompt(categoriesWithFields) },
+    //     { role: 'system', content: buildSystemPrompt(collectionsWithFields) },
     //     ...formatHistoryForOpenAI(history),
     //     { role: 'user', content: message },
     // ];

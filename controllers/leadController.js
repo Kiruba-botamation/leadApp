@@ -19,8 +19,8 @@ class LeadController {
 
     /**
      * Create lead(s).
-     * POST /api/leads[/:category]       — API key path → queued  (202)
-     * POST /api/ui/leads[/:category]    — SSO path     → sync    (201)
+     * POST /api/leads[/:collection]       — API key path → queued  (202)
+     * POST /api/ui/leads[/:collection]    — SSO path     → sync    (201)
      */
     async createLead(req, res) {
         try {
@@ -34,12 +34,12 @@ class LeadController {
                 return res.status(400).json({ success: false, message: 'Authenticated account context is required' });
             }
 
-            const category     = req.params.category || req.query.category || null;
+            const collection   = req.params.collection || req.query.collection || null;
             const mergeProperties = req.body?.config?.merge?.properties ?? null;
 
             // Strip routing-only fields from the payload
             const stripMeta = (item) => {
-                const { category: _c, acctId: _a, acctNo: _n, ...rest } = item;
+                const { collection: _c, acctId: _a, acctNo: _n, ...rest } = item;
                 return rest;
             };
             const leadPayload = Array.isArray(data) ? data.map(stripMeta) : stripMeta(data);
@@ -49,7 +49,7 @@ class LeadController {
             if (isApiKeyRequest) {
                 try {
                     const job = await withTimeout(
-                        addToQueue({ acctId, leadPayload, category, mergeProperties }),
+                        addToQueue({ acctId, leadPayload, collection, mergeProperties }),
                         QUEUE_ENQUEUE_TIMEOUT_MS,
                         `Queue enqueue timed out after ${QUEUE_ENQUEUE_TIMEOUT_MS}ms`
                     );
@@ -67,7 +67,7 @@ class LeadController {
             }
 
             // Synchronous create (SSO path, or API key with queue unavailable)
-            const result = await leadService.createLead(leadPayload, acctId, category, mergeProperties);
+            const result = await leadService.createLead(leadPayload, acctId, collection, mergeProperties);
 
             return res.status(201).json({
                 success: true,
@@ -91,7 +91,7 @@ class LeadController {
             const {
                 page, limit, sortBy, sortOrder, search,
                 acctId: acctIdQuery,
-                categoryId,
+                collectionId,
                 fieldFilters,
                 responsibleFilter
             } = req.query;
@@ -110,7 +110,7 @@ class LeadController {
                 sortOrder:    sortOrderVal,
                 search,
                 acctId,
-                categoryId,
+                collectionId,
                 fieldFilters,
                 responsibleFilter,
                 // Per-admin visibility — superadmins see all, others see only their assigned leads
@@ -177,7 +177,7 @@ class LeadController {
                 acctId: callerAcctId,
                 prevResponsible: existing.responsible ?? null,
                 prevStage: existing.stage ?? null,
-                categoryId: existing.categoryId ?? null
+                collectionId: existing.collectionId ?? null
             });
             return res.status(200).json({ success: true, message: 'Lead updated successfully', data: updated });
         } catch (error) {

@@ -5,8 +5,8 @@
  *
  * Structure:
  *   - 10 accounts  (acctNo 1717193 & 1503145 mandatory; 8 more auto-picked or dummy-created)
- *   - 10 categories per account  (Cat1 – Cat10, created if missing)
- *   - 1,00,000 leads per category
+ *   - 10 collections per account  (Col1 – Col10, created if missing)
+ *   - 1,00,000 leads per collection
  *   - Total: 10 × 10 × 1,00,000 = 1,00,00,000
  *
  * Run:
@@ -30,14 +30,14 @@ const dbName = process.env.MONGO_DB_NAME || 'leadapp';
 const accountSchema = new mongoose.Schema({ _id: String, acctNo: String }, { strict: false });
 const Account = mongoose.model('Account', accountSchema);
 
-const categorySchema = new mongoose.Schema(
-    { _id: String, acctId: String, categoryName: String, default: Boolean, fields: [String] },
+const collectionSchema = new mongoose.Schema(
+    { _id: String, acctId: String, collectionName: String, default: Boolean, fields: [String] },
     { strict: false, timestamps: true }
 );
-const Category = mongoose.model('Category', categorySchema, 'leadcategories');
+const Collection = mongoose.model('Collection', collectionSchema, 'lead_collections');
 
 const leadSchema = new mongoose.Schema(
-    { _id: String, acctId: String, categoryId: String },
+    { _id: String, acctId: String, collectionId: String },
     { strict: false, timestamps: true }
 );
 const Lead = mongoose.model('Lead', leadSchema);
@@ -45,12 +45,12 @@ const Lead = mongoose.model('Lead', leadSchema);
 // ── config ────────────────────────────────────────────────────────────────────
 const MANDATORY_ACCT_NOS = ['1717193', '1503145'];
 const TOTAL_ACCOUNTS = 10;
-const CATEGORIES_PER_ACCT = 10;
-const LEADS_PER_CATEGORY = 100_000;
+const COLLECTIONS_PER_ACCT = 10;
+const LEADS_PER_COLLECTION = 100_000;
 const BATCH_SIZE = 10_000;
 const LOG_EVERY = 100_000;
 
-// Fields tracked on leadcategories.fields (mirrors what createLead() does)
+// Fields tracked on lead_collections.fields (mirrors what createLead() does)
 const TRACKED_LEAD_FIELDS = [
     'memberName', 'age', 'phone', 'email', 'status',
     'source', 'trainerName', 'dueDate', 'notes'
@@ -68,33 +68,33 @@ function newId() {
     return new mongoose.Types.ObjectId().toHexString();
 }
 
-async function ensureCategory(acctId, categoryName, isDefault) {
-    let cat = await Category.findOne({ acctId, categoryName }).lean();
-    if (!cat) {
-        cat = await Category.create({
+async function ensureCollection(acctId, collectionName, isDefault) {
+    let col = await Collection.findOne({ acctId, collectionName }).lean();
+    if (!col) {
+        col = await Collection.create({
             _id: newId(),
             acctId,
-            categoryName,
+            collectionName,
             default: isDefault,
             fields: TRACKED_LEAD_FIELDS
         });
-        console.log(`  ✚ Created category "${categoryName}" for acctId ${acctId}`);
+        console.log(`  ✚ Created collection "${collectionName}" for acctId ${acctId}`);
     } else {
-        // Ensure fields array is populated even if category already existed
-        await Category.updateOne(
-            { _id: cat._id },
+        // Ensure fields array is populated even if collection already existed
+        await Collection.updateOne(
+            { _id: col._id },
             { $addToSet: { fields: { $each: TRACKED_LEAD_FIELDS } } }
         );
     }
-    return cat._id;
+    return col._id;
 }
 
-function buildLead(globalIndex, acctId, categoryId) {
+function buildLead(globalIndex, acctId, collectionId) {
     const date = new Date(now - Math.random() * ONE_YEAR);
     return {
         _id: newId(),
         acctId,
-        categoryId,
+        collectionId,
         memberName: `User_${globalIndex}`,
         age: 18 + (globalIndex % 45),
         phone: '9' + String(globalIndex % 1_000_000_000).padStart(9, '0'),
@@ -142,21 +142,21 @@ async function run() {
     console.log(`\n📋 Accounts (${accounts.length}):`);
     accounts.forEach((a, i) => console.log(`   ${i + 1}. acctNo=${a.acctNo}  _id=${a._id}`));
 
-    // ── 2. Resolve / create categories ────────────────────────────────────────
-    console.log('\n🗂️  Resolving categories...');
-    const categoryMap = {};
+    // ── 2. Resolve / create collections ───────────────────────────────────────
+    console.log('\n🗂️  Resolving collections...');
+    const collectionMap = {};
     for (const acct of accounts) {
-        categoryMap[acct._id] = [];
-        for (let c = 1; c <= CATEGORIES_PER_ACCT; c++) {
-            const catId = await ensureCategory(acct._id, `Cat${c}`, c === 1);
-            categoryMap[acct._id].push(catId);
+        collectionMap[acct._id] = [];
+        for (let c = 1; c <= COLLECTIONS_PER_ACCT; c++) {
+            const colId = await ensureCollection(acct._id, `Col${c}`, c === 1);
+            collectionMap[acct._id].push(colId);
         }
     }
 
     // ── 3. Insert leads ────────────────────────────────────────────────────────
-    const totalRecords = accounts.length * CATEGORIES_PER_ACCT * LEADS_PER_CATEGORY;
+    const totalRecords = accounts.length * COLLECTIONS_PER_ACCT * LEADS_PER_COLLECTION;
     console.log(`\n🚀 Starting insertion of ${totalRecords.toLocaleString('en-IN')} records`);
-    console.log(`   ${accounts.length} accounts × ${CATEGORIES_PER_ACCT} categories × ${LEADS_PER_CATEGORY.toLocaleString('en-IN')} leads`);
+    console.log(`   ${accounts.length} accounts × ${COLLECTIONS_PER_ACCT} collections × ${LEADS_PER_COLLECTION.toLocaleString('en-IN')} leads`);
     console.log(`   Batch size: ${BATCH_SIZE.toLocaleString('en-IN')}\n`);
 
     let globalInserted = 0;
@@ -166,19 +166,19 @@ async function run() {
     for (const acct of accounts) {
         console.log(`\n── Account: ${acct.acctNo}  (_id=${acct._id})`);
 
-        for (const catId of categoryMap[acct._id]) {
-            let catInserted = 0;
+        for (const colId of collectionMap[acct._id]) {
+            let colInserted = 0;
 
-            while (catInserted < LEADS_PER_CATEGORY) {
-                const thisBatch = Math.min(BATCH_SIZE, LEADS_PER_CATEGORY - catInserted);
+            while (colInserted < LEADS_PER_COLLECTION) {
+                const thisBatch = Math.min(BATCH_SIZE, LEADS_PER_COLLECTION - colInserted);
                 const batch = [];
 
                 for (let k = 0; k < thisBatch; k++) {
-                    batch.push(buildLead(globalIndex++, acct._id, catId));
+                    batch.push(buildLead(globalIndex++, acct._id, colId));
                 }
 
                 await Lead.insertMany(batch, { ordered: false });
-                catInserted += thisBatch;
+                colInserted += thisBatch;
                 globalInserted += thisBatch;
 
                 if (globalInserted % LOG_EVERY === 0) {
@@ -187,7 +187,7 @@ async function run() {
                 }
             }
 
-            console.log(`   ✅ catId=${catId} — ${catInserted.toLocaleString('en-IN')} leads inserted`);
+            console.log(`   ✅ colId=${colId} — ${colInserted.toLocaleString('en-IN')} leads inserted`);
         }
     }
 

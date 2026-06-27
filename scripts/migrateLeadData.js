@@ -1,14 +1,14 @@
 /**
  * Lead Data Field Migration Script
  *
- * Remaps field keys in lead documents for a given category.
- * Use this when you rename or reorganise fields in a category schema and
+ * Remaps field keys in lead documents for a given collection.
+ * Use this when you rename or reorganise fields in a collection schema and
  * need the existing lead data to match the new field keys.
  *
  * ── Configuration ────────────────────────────────────────────────────────────
  * Edit the CONFIG section below before running:
  *
- *   CATEGORY_ID  — the MongoDB _id of the target LeadCategory document
+ *   COLLECTION_ID — the MongoDB _id of the target LeadCollection document
  *   FIELD_MAP    — an object mapping OLD field key → NEW field key
  *                  e.g. { "full_name": "name", "mob": "mobile_number" }
  *
@@ -33,8 +33,8 @@ dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 
 // ── ✏️  EDIT THIS SECTION ────────────────────────────────────────────────────
 
-/** MongoDB _id of the LeadCategory you want to migrate leads for */
-const CATEGORY_ID = '69db9283efec5b2d90b2c1df'; // ← replace with your category _id
+/** MongoDB _id of the LeadCollection you want to migrate leads for */
+const COLLECTION_ID = '69db9283efec5b2d90b2c1df'; // ← replace with your collection _id
 
 /**
  * Mapping of OLD field key → NEW field key.
@@ -70,8 +70,8 @@ const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 const DB_NAME = process.env.MONGO_DB_NAME || 'leadapp';
 
 async function migrate() {
-    if (!CATEGORY_ID || CATEGORY_ID === '64abc123def456789012345a') {
-        console.error('[migrate] ✗ CATEGORY_ID is not set. Edit the CONFIG section in this script.');
+    if (!COLLECTION_ID || COLLECTION_ID === '64abc123def456789012345a') {
+        console.error('[migrate] ✗ COLLECTION_ID is not set. Edit the CONFIG section in this script.');
         process.exit(1);
     }
 
@@ -82,15 +82,15 @@ async function migrate() {
 
     await mongoose.connect(MONGO_URI, { dbName: DB_NAME });
     console.log(`[migrate] Connected to MongoDB (db: ${DB_NAME})`);
-    console.log(`[migrate] Category ID : ${CATEGORY_ID}`);
+    console.log(`[migrate] Collection ID : ${COLLECTION_ID}`);
     console.log(`[migrate] Field map   : ${JSON.stringify(FIELD_MAP, null, 2)}`);
     console.log(`[migrate] Dry run     : ${DRY_RUN ? 'YES — no changes will be written' : 'NO  — changes WILL be written'}`);
     console.log('');
 
     const collection = mongoose.connection.collection('leads');
 
-    // categoryId is stored as a plain string in lead documents (not a BSON ObjectId)
-    const cursor = collection.find({ categoryId: CATEGORY_ID });
+    // collectionId is stored as a plain string in lead documents (not a BSON ObjectId)
+    const cursor = collection.find({ collectionId: COLLECTION_ID });
 
     let migrated = 0;
     let skipped = 0;

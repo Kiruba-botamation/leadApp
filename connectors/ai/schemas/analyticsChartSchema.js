@@ -49,7 +49,7 @@ export const geminiResponseSchema = {
                     xAxis: {
                         type: 'object',
                         properties: {
-                            value: { type: 'string', description: 'Field name from the category fields list' },
+                            value: { type: 'string', description: 'Field name from the collection fields list' },
                             label: { type: 'string', description: 'Human-readable label' },
                         },
                         required: ['value', 'label'],
@@ -57,7 +57,7 @@ export const geminiResponseSchema = {
                     yAxis: {
                         type: 'object',
                         properties: {
-                            value: { type: 'string', description: 'Field name from the category fields list' },
+                            value: { type: 'string', description: 'Field name from the collection fields list' },
                             label: { type: 'string', description: 'Human-readable label' },
                         },
                         required: ['value', 'label'],
@@ -118,17 +118,17 @@ export const geminiResponseSchema = {
                     showLegend: { type: 'boolean' },
                     showDataLabels: { type: 'boolean' },
                     numberSplitCount: { type: 'number' },
-                    chartCategory: {
+                    chartCollection: {
                         type: 'object',
-                        description: 'The category this chart belongs to',
+                        description: 'The collection this chart belongs to',
                         properties: {
                             _id: { type: 'string' },
-                            categoryName: { type: 'string' },
+                            collectionName: { type: 'string' },
                         },
-                        required: ['_id', 'categoryName'],
+                        required: ['_id', 'collectionName'],
                     },
                 },
-                required: ['chartName', 'chartType', 'yAxis', 'aggregation', 'chartCategory'],
+                required: ['chartName', 'chartType', 'yAxis', 'aggregation', 'chartCollection'],
             },
         },
     },
@@ -166,7 +166,7 @@ export const responseJsonSchema = {
                     showLegend: { type: 'boolean' },
                     showDataLabels: { type: 'boolean' },
                     numberSplitCount: { type: 'number' },
-                    chartCategory: { type: 'object' },
+                    chartCollection: { type: 'object' },
                 },
             },
         },
@@ -176,16 +176,16 @@ export const responseJsonSchema = {
 
 // ── System prompt builder — shared across all providers ───────────────────────
 /**
- * @param {Array<{ _id: string, categoryName: string, fields: string[] }>} categoriesWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
  * @param {Array<object>} currentCharts - Existing charts on the dashboard
  * @returns {string} Full system instruction text
  */
-export function buildSystemPrompt(categoriesWithFields, currentCharts = [], today = new Date().toISOString().split('T')[0]) {
-    const categoriesBlock = categoriesWithFields.length > 0
-        ? categoriesWithFields.map(c =>
-            `  - Category: "${c.categoryName}" (id: ${c._id})\n    Fields: ${c.fields.join(', ')}`
+export function buildSystemPrompt(collectionsWithFields, currentCharts = [], today = new Date().toISOString().split('T')[0]) {
+    const collectionsBlock = collectionsWithFields.length > 0
+        ? collectionsWithFields.map(c =>
+            `  - Collection: "${c.collectionName}" (id: ${c._id})\n    Fields: ${c.fields.join(', ')}`
         ).join('\n')
-        : '  - No categories available yet';
+        : '  - No collections available yet';
 
     const currentChartsBlock = currentCharts.length > 0
         ? currentCharts.map(c => {
@@ -194,8 +194,8 @@ export function buildSystemPrompt(categoriesWithFields, currentCharts = [], toda
             const yLabel = c.yAxis?.label || c.yAxis?.value || 'none';
             const agg = c.aggregation?.value || 'count';
             const type = c.chartType?.label || c.chartType?.value || 'unknown';
-            const category = c.chartCategory?.categoryName || 'unknown';
-            return `  - id:${c.id} | "${c.chartName}" | ${type} | category: ${category} | x: ${xLabel}, y: ${yLabel}, agg: ${agg} | date: ${preset}`;
+            const collection = c.chartCollection?.collectionName || 'unknown';
+            return `  - id:${c.id} | "${c.chartName}" | ${type} | collection: ${collection} | x: ${xLabel}, y: ${yLabel}, agg: ${agg} | date: ${preset}`;
         }).join('\n')
         : '  - No charts on the dashboard yet';
 
@@ -207,11 +207,11 @@ CURRENT YEAR: ${today.slice(0, 4)}
 Use this as the authoritative reference for all relative date expressions. When a user says "this January", "last March", "Q1", etc., derive the exact ISO dates using this year unless a different year is explicitly stated.
 
 ════════════════════════════════════════════════════════
-AVAILABLE CATEGORIES AND FIELDS
+AVAILABLE COLLECTIONS AND FIELDS
 ════════════════════════════════════════════════════════
-${categoriesBlock}
+${collectionsBlock}
 
-Special system fields available in ALL categories:
+Special system fields available in ALL collections:
   - createdAt  (timestamp — when the lead was created)
   - updatedAt  (timestamp — when the lead was last updated)
 
@@ -227,7 +227,7 @@ CRITICAL — EDITING EXISTING CHARTS:
 
   When editing, you MUST copy ALL fields from the existing chart first, then apply only the
   requested changes on top. This means:
-    - chartCategory  → always inherit from the existing chart, NEVER ask
+    - chartCollection → always inherit from the existing chart, NEVER ask
     - xAxis / yAxis  → inherit unless user explicitly asks to change them
     - aggregation    → inherit unless user explicitly asks to change it
     - _datePreset    → inherit unless user mentions a different time range
@@ -239,7 +239,7 @@ CRITICAL — EDITING EXISTING CHARTS:
     "make that chart a bar chart"                          → editChartId: <id of most recently discussed chart>
     "update the leads by status chart to show this week"   → editChartId: <id of "Leads by Status">
     "rename it to Monthly Overview"                        → editChartId: <id of chart being discussed>
-    "change the pie chart to a number chart"               → editChartId: <id of the pie chart>, inherit category/axes/agg, change chartType to number
+    "change the pie chart to a number chart"               → editChartId: <id of the pie chart>, inherit collection/axes/agg, change chartType to number
     "convert the bar chart to line"                        → editChartId: <id of the bar chart>, inherit everything, change chartType to line
 
   Always include ALL config fields in the returned object (not just changed ones) so the
@@ -312,32 +312,32 @@ LAYOUT DEFAULTS:
   - numberSplitCount: 0 (for number chart breakdowns, default is none)
 
 ════════════════════════════════════════════════════════
-CATEGORY SELECTION RULES
+COLLECTION SELECTION RULES
 ════════════════════════════════════════════════════════
-- If only one category exists, always use it — never ask.
-- If the user mentions specific field names, pick the category that contains those fields.
-- NEVER ask about category when editing an existing chart — always inherit it.
+- If only one collection exists, always use it — never ask.
+- If the user mentions specific field names, pick the collection that contains those fields.
+- NEVER ask about collection when editing an existing chart — always inherit it.
 
-When creating a NEW chart and multiple categories exist, use SMART INFERENCE based on the conversation context:
+When creating a NEW chart and multiple collections exist, use SMART INFERENCE based on the conversation context:
   INFER (do NOT ask) when:
-    • The conversation already established a category (a prior message or chart references it) → use that category.
-    • The user's request references field names, data concepts, or terminology that clearly belong to one category.
-    • The user says "same category", "same as before", or similar.
-  
+    • The conversation already established a collection (a prior message or chart references it) → use that collection.
+    • The user's request references field names, data concepts, or terminology that clearly belong to one collection.
+    • The user says "same collection", "same as before", or similar.
+
   ASK (type: followUp) only when:
-    • This is a genuinely fresh request with no prior category context in the conversation.
-    • No fields or concepts in the message hint at a specific category.
-    • Multiple categories are plausible and choosing the wrong one would give a meaningless chart.
-  
-  When asking, offer the category names as quickReplies so the user can tap to answer.
-  Do NOT ask about category if you already asked earlier in the conversation and the user answered.
+    • This is a genuinely fresh request with no prior collection context in the conversation.
+    • No fields or concepts in the message hint at a specific collection.
+    • Multiple collections are plausible and choosing the wrong one would give a meaningless chart.
+
+  When asking, offer the collection names as quickReplies so the user can tap to answer.
+  Do NOT ask about collection if you already asked earlier in the conversation and the user answered.
 
 ════════════════════════════════════════════════════════
 RESPONSE BEHAVIOUR
 ════════════════════════════════════════════════════════
 
 WHEN TO ASK (type: "followUp"):
-  - You need information you cannot infer (e.g. which category to use when multiple exist and intent is unclear)
+  - You need information you cannot infer (e.g. which collection to use when multiple exist and intent is unclear)
   - Always include 3–6 short quickReplies that directly answer your question
   - Keep the question concise and friendly
 
@@ -355,7 +355,7 @@ CHART CREATION PRINCIPLES:
   3. Use "count" aggregation unless user specifically asks for sum/average
   4. For "leads per day/week/month" → use createdAt on xAxis with appropriate dateGranularity
   5. For "breakdown by X" → use that field as xAxis, count as aggregation
-  6. Always set chartCategory using the exact _id and categoryName from the categories list above
+  6. Always set chartCollection using the exact _id and collectionName from the collections list above
 
 FIELD NAME MAPPING:
   - Convert field names to human-readable labels using camelCase splitting:

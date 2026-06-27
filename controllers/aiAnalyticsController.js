@@ -2,11 +2,11 @@
  * aiAnalyticsController.js
  * ────────────────────────────────────────────────────────────────────────────
  * Handles AI chat requests for the analytics chart assistant.
- * Fetches categories + fields, then delegates to the active AI provider.
+ * Fetches collections + fields, then delegates to the active AI provider.
  * ────────────────────────────────────────────────────────────────────────────
  */
 import { getAiProvider } from '../connectors/ai/index.js';
-import categoryService from '../services/categoryService.js';
+import collectionService from '../services/collectionService.js';
 
 class AiAnalyticsController {
     /**
@@ -49,23 +49,23 @@ class AiAnalyticsController {
             // Cap history at last 6 turns to keep prompt size reasonable and avoid Gemini timeouts
             const recentHistory = history.slice(-6);
 
-            // ── Fetch categories with their fields ──────────────────────────
-            let categoriesWithFields = [];
+            // ── Fetch collections with their fields ─────────────────────────
+            let collectionsWithFields = [];
             try {
-                const categoryList = await categoryService.getCategories(acctId);
-                categoriesWithFields = await Promise.all(
-                    categoryList.map(async cat => {
-                        const detail = await categoryService.getCategoryFields(acctId, String(cat._id));
+                const collectionList = await collectionService.getCollections(acctId);
+                collectionsWithFields = await Promise.all(
+                    collectionList.map(async col => {
+                        const detail = await collectionService.getCollectionFields(acctId, String(col._id));
                         return {
-                            _id:          String(cat._id),
-                            categoryName: cat.categoryName,
-                            fields:       (detail.fields || []).filter(f => !f.system),
+                            _id:            String(col._id),
+                            collectionName: col.collectionName,
+                            fields:         (detail.fields || []).filter(f => !f.system),
                         };
                     })
                 );
             } catch (fetchErr) {
-                // Non-fatal — AI can still help even without category context
-                console.error('[AiAnalytics] Failed to fetch categories:', fetchErr.message);
+                // Non-fatal — AI can still help even without collection context
+                console.error('[AiAnalytics] Failed to fetch collections:', fetchErr.message);
             }
 
             // ── Call AI provider ────────────────────────────────────────────
@@ -73,7 +73,7 @@ class AiAnalyticsController {
             const result = await ai.generateAnalyticsCharts(
                 message.trim(),
                 recentHistory,
-                categoriesWithFields,
+                collectionsWithFields,
                 Array.isArray(currentCharts) ? currentCharts : []
             );
 

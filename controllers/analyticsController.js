@@ -86,7 +86,7 @@ class AnalyticsController {
     try {
       // Support both POST (body) and GET (query params)
       const source = req.body && Object.keys(req.body).length ? req.body : req.query;
-      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, categoryId, acctId: acctIdSource, dateGranularity } = source;
+      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, collectionId, acctId: acctIdSource, dateGranularity } = source;
 
       // acctId always comes from the request (query/body) — never from req.user
       const acctId = acctIdSource || req.headers['x-acctno'];
@@ -141,7 +141,7 @@ class AnalyticsController {
         aggregation,
         dateFilter,
         acctId,
-        categoryId: categoryId || null,
+        collectionId: collectionId || null,
         dateGranularity: resolvedGranularity
       });
 

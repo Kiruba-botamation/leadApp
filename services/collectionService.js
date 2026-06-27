@@ -1,9 +1,9 @@
-import LeadCategory from '../models/leadCategoryModel.js';
+import LeadCollection from '../models/leadCollectionModel.js';
 import Lead from '../models/leadModel.js';
 import { performGet, perfomDataExistanceCheck, performCount } from '../config/mongoConnector.js';
 
 /**
- * System fields that every category implicitly has.
+ * System fields that every collection implicitly has.
  * These are injected at read-time and NEVER stored in the DB fields array.
  */
 export const SYSTEM_FIELDS = [
@@ -44,7 +44,7 @@ export const SYSTEM_FIELDS = [
 /**
  * The `stage` system field. Kept OUT of SYSTEM_FIELDS (so the legacy field-position
  * logic for name/phone/email/responsible is untouched) but still an allowed lead field
- * and a selectable analytics axis. Stage values reference a per-category stage id.
+ * and a selectable analytics axis. Stage values reference a per-collection stage id.
  */
 export const STAGE_FIELD = {
     label:    'Stage',
@@ -72,8 +72,8 @@ function sortStages(stages = []) {
     return [...stages].sort((a, b) => (a.order - b.order) || (a.id - b.id));
 }
 
-/** Normalise a category name: lowercase, spaces → underscore, strip non-alphanumeric-underscore */
-export function normaliseCategoryName(name) {
+/** Normalise a collection name: lowercase, spaces → underscore, strip non-alphanumeric-underscore */
+export function normaliseCollectionName(name) {
     return name
         .toLowerCase()
         .replace(/\s+/g, '_')
@@ -88,34 +88,34 @@ export function normaliseFieldKey(label) {
         .replace(/[^a-z0-9_]/g, '');
 }
 
-class CategoryService {
+class CollectionService {
     /**
-     * Get all categories for an account (lightweight list, no field details).
+     * Get all collections for an account (lightweight list, no field details).
      */
-    async getCategories(acctId) {
-        const result = await performGet(LeadCategory, { acctId }, [], { sort: { createdAt: 1 } });
+    async getCollections(acctId) {
+        const result = await performGet(LeadCollection, { acctId }, [], { sort: { createdAt: 1 } });
         return (result.data || []).map(c => ({
-            _id:          c._id,
-            categoryName: c.categoryName,
-            default:      c.default,
-            stages:       sortStages(c.stages)
+            _id:            c._id,
+            collectionName: c.collectionName,
+            default:        c.default,
+            stages:         sortStages(c.stages)
         }));
     }
 
     /**
-     * Get column definitions for a single category.
+     * Get column definitions for a single collection.
      * System fields are stored in the DB array (with system:true) so their position is persisted.
-     * For legacy categories that pre-date this, system fields are prepended on the fly.
+     * For legacy collections that pre-date this, system fields are prepended on the fly.
      */
-    async getCategoryFields(acctId, categoryId) {
-        const category = await LeadCategory.findOne({ _id: categoryId, acctId }).lean();
-        if (!category) {
-            const err = new Error('Category not found');
+    async getCollectionFields(acctId, collectionId) {
+        const collection = await LeadCollection.findOne({ _id: collectionId, acctId }).lean();
+        if (!collection) {
+            const err = new Error('Collection not found');
             err.statusCode = 404;
             throw err;
         }
 
-        const storedFields   = category.fields || [];
+        const storedFields   = collection.fields || [];
         const systemFieldKeys = new Set(SYSTEM_FIELDS.map(f => f.field));
 
         // If system fields are already stored (new behaviour) use as-is.
@@ -126,131 +126,131 @@ class CategoryService {
             : [...SYSTEM_FIELDS, ...storedFields];
 
         return {
-            _id:          category._id,
-            categoryName: category.categoryName,
-            default:      category.default,
+            _id:            collection._id,
+            collectionName: collection.collectionName,
+            default:        collection.default,
             fields,
-            stages:       sortStages(category.stages),
+            stages:         sortStages(collection.stages),
         };
     }
 
     /**
-     * Create a brand-new category with an optional initial field list.
+     * Create a brand-new collection with an optional initial field list.
      */
-    async createCategory(acctId, categoryName, fields = []) {
-        const normalisedName = normaliseCategoryName(categoryName);
+    async createCollection(acctId, collectionName, fields = []) {
+        const normalisedName = normaliseCollectionName(collectionName);
         if (!normalisedName) {
-            const err = new Error('Category name must contain at least one alphanumeric character');
+            const err = new Error('Collection name must contain at least one alphanumeric character');
             err.statusCode = 400;
             throw err;
         }
 
-        const existing = await perfomDataExistanceCheck(LeadCategory, { acctId, categoryName: normalisedName });
+        const existing = await perfomDataExistanceCheck(LeadCollection, { acctId, collectionName: normalisedName });
         if (existing) {
-            const err = new Error(`Category "${normalisedName}" already exists`);
+            const err = new Error(`Collection "${normalisedName}" already exists`);
             err.statusCode = 409;
             throw err;
         }
 
-        const count     = await performCount(LeadCategory, { acctId });
+        const count     = await performCount(LeadCollection, { acctId });
         const isDefault = count === 0;
 
         const validatedFields = this._validateAndNormaliseFields(fields);
 
-        const category = await LeadCategory.create({
+        const collection = await LeadCollection.create({
             acctId,
-            categoryName: normalisedName,
-            default:      isDefault,
-            fields:       validatedFields,
-            // Every category starts with one mandatory default stage.
-            stages:       [{ id: 1, name: 'New', color: DEFAULT_STAGE_COLOR, order: 0 }],
-            nextStageId:  2
+            collectionName: normalisedName,
+            default:        isDefault,
+            fields:         validatedFields,
+            // Every collection starts with one mandatory default stage.
+            stages:         [{ id: 1, name: 'New', color: DEFAULT_STAGE_COLOR, order: 0 }],
+            nextStageId:    2
         });
 
-        // Re-read to apply same logic as getCategoryFields
-        const storedFields    = category.fields || [];
+        // Re-read to apply same logic as getCollectionFields
+        const storedFields    = collection.fields || [];
         const systemFieldKeys = new Set(SYSTEM_FIELDS.map(f => f.field));
         const hasStoredSystem = storedFields.some(f => systemFieldKeys.has(f.field));
         const allFields = hasStoredSystem ? storedFields : [...SYSTEM_FIELDS, ...storedFields];
 
         return {
-            _id:          category._id,
-            categoryName: category.categoryName,
-            default:      category.default,
-            fields:       allFields,
-            stages:       sortStages(category.stages)
+            _id:            collection._id,
+            collectionName: collection.collectionName,
+            default:        collection.default,
+            fields:         allFields,
+            stages:         sortStages(collection.stages)
         };
     }
 
     /**
-     * Update category name and/or column definitions.
+     * Update collection name and/or column definitions.
      */
-    async updateCategory(acctId, categoryId, { categoryName, fields }) {
-        const category = await LeadCategory.findOne({ _id: categoryId, acctId });
-        if (!category) {
-            const err = new Error('Category not found');
+    async updateCollection(acctId, collectionId, { collectionName, fields }) {
+        const collection = await LeadCollection.findOne({ _id: collectionId, acctId });
+        if (!collection) {
+            const err = new Error('Collection not found');
             err.statusCode = 404;
             throw err;
         }
 
-        if (categoryName !== undefined) {
-            const normalisedName = normaliseCategoryName(categoryName);
+        if (collectionName !== undefined) {
+            const normalisedName = normaliseCollectionName(collectionName);
             if (!normalisedName) {
-                const err = new Error('Category name must contain at least one alphanumeric character');
+                const err = new Error('Collection name must contain at least one alphanumeric character');
                 err.statusCode = 400;
                 throw err;
             }
 
             // Check uniqueness if name actually changes
-            if (normalisedName !== category.categoryName) {
-                const duplicate = await perfomDataExistanceCheck(LeadCategory, {
+            if (normalisedName !== collection.collectionName) {
+                const duplicate = await perfomDataExistanceCheck(LeadCollection, {
                     acctId,
-                    categoryName: normalisedName,
-                    _id: { $ne: categoryId }
+                    collectionName: normalisedName,
+                    _id: { $ne: collectionId }
                 });
                 if (duplicate) {
-                    const err = new Error(`Category "${normalisedName}" already exists`);
+                    const err = new Error(`Collection "${normalisedName}" already exists`);
                     err.statusCode = 409;
                     throw err;
                 }
             }
-            category.categoryName = normalisedName;
+            collection.collectionName = normalisedName;
         }
 
         if (fields !== undefined) {
-            category.fields = this._validateAndNormaliseFields(fields);
+            collection.fields = this._validateAndNormaliseFields(fields);
         }
 
-        await category.save();
+        await collection.save();
 
-        const storedFields    = category.fields || [];
+        const storedFields    = collection.fields || [];
         const systemFieldKeys = new Set(SYSTEM_FIELDS.map(f => f.field));
         const hasStoredSystem = storedFields.some(f => systemFieldKeys.has(f.field));
         const allFields = hasStoredSystem ? storedFields : [...SYSTEM_FIELDS, ...storedFields];
 
         return {
-            _id:          category._id,
-            categoryName: category.categoryName,
-            default:      category.default,
-            fields:       allFields,
-            stages:       sortStages(category.stages)
+            _id:            collection._id,
+            collectionName: collection.collectionName,
+            default:        collection.default,
+            fields:         allFields,
+            stages:         sortStages(collection.stages)
         };
     }
 
     /**
-     * Set a category as the account default.
+     * Set a collection as the account default.
      */
-    async setDefaultCategory(acctId, categoryId) {
-        const category = await perfomDataExistanceCheck(LeadCategory, { _id: categoryId, acctId });
-        if (!category) {
-            const err = new Error('Category not found');
+    async setDefaultCollection(acctId, collectionId) {
+        const collection = await perfomDataExistanceCheck(LeadCollection, { _id: collectionId, acctId });
+        if (!collection) {
+            const err = new Error('Collection not found');
             err.statusCode = 404;
             throw err;
         }
 
-        await LeadCategory.updateMany({ acctId }, { $set: { default: false } });
-        const updated = await LeadCategory.findByIdAndUpdate(
-            categoryId,
+        await LeadCollection.updateMany({ acctId }, { $set: { default: false } });
+        const updated = await LeadCollection.findByIdAndUpdate(
+            collectionId,
             { $set: { default: true } },
             { new: true }
         );
@@ -258,70 +258,70 @@ class CategoryService {
     }
 
     /**
-     * Delete a category and all its leads.
+     * Delete a collection and all its leads.
      */
-    async deleteCategory(acctId, categoryId) {
-        const category = await LeadCategory.findOne({ _id: categoryId, acctId }).lean();
-        if (!category) {
-            const err = new Error('Category not found');
+    async deleteCollection(acctId, collectionId) {
+        const collection = await LeadCollection.findOne({ _id: collectionId, acctId }).lean();
+        if (!collection) {
+            const err = new Error('Collection not found');
             err.statusCode = 404;
             throw err;
         }
 
-        const leadsResult = await Lead.deleteMany({ acctId, categoryId });
-        await LeadCategory.deleteOne({ _id: categoryId, acctId });
+        const leadsResult = await Lead.deleteMany({ acctId, collectionId });
+        await LeadCollection.deleteOne({ _id: collectionId, acctId });
 
         return {
-            deletedLeads:    leadsResult.deletedCount,
-            deletedCategory: true,
-            categoryName:    category.categoryName
+            deletedLeads:      leadsResult.deletedCount,
+            deletedCollection: true,
+            collectionName:    collection.collectionName
         };
     }
 
     /**
-     * Return the set of allowed field keys for a category (system + user-defined).
+     * Return the set of allowed field keys for a collection (system + user-defined).
      * Used by leadService to validate incoming payloads.
      */
-    async getAllowedFields(acctId, categoryName) {
-        const category = await LeadCategory.findOne({ acctId, categoryName }).lean();
-        if (!category) return null; // caller handles 404
+    async getAllowedFields(acctId, collectionName) {
+        const collection = await LeadCollection.findOne({ acctId, collectionName }).lean();
+        if (!collection) return null; // caller handles 404
 
-        const userFields   = (category.fields || []).map(f => f.field);
+        const userFields   = (collection.fields || []).map(f => f.field);
         const systemFields = SYSTEM_FIELDS.map(f => f.field);
         return new Set([...systemFields, STAGE_FIELD.field, ...userFields]);
     }
 
     /**
-     * Retrieve a category document by name (for createLead lookup).
+     * Retrieve a collection document by name (for createLead lookup).
      */
-    async findByName(acctId, categoryName) {
-        return LeadCategory.findOne({ acctId, categoryName }).lean();
+    async findByName(acctId, collectionName) {
+        return LeadCollection.findOne({ acctId, collectionName }).lean();
     }
 
     // ── Stage lifecycle ──────────────────────────────────────────────────────
 
     /**
-     * The id of a category's "first" stage (lowest order, tiebreak lowest id).
+     * The id of a collection's "first" stage (lowest order, tiebreak lowest id).
      * Used as the default stage when a lead is created without one, and as the
      * reassignment target when a stage is deleted. Returns null if no stages.
-     * Accepts a plain category doc (lean) or a Mongoose document.
+     * Accepts a plain collection doc (lean) or a Mongoose document.
      */
-    getFirstStageId(categoryDoc) {
-        const sorted = sortStages(categoryDoc?.stages);
+    getFirstStageId(collectionDoc) {
+        const sorted = sortStages(collectionDoc?.stages);
         return sorted.length ? sorted[0].id : null;
     }
 
-    /** Build an { [stageId]: name } map for a category (analytics / MCP / webhooks). */
-    async resolveStageMap(acctId, categoryId) {
-        const category = await LeadCategory.findOne({ _id: categoryId, acctId }, { stages: 1 }).lean();
+    /** Build an { [stageId]: name } map for a collection (analytics / MCP / webhooks). */
+    async resolveStageMap(acctId, collectionId) {
+        const collection = await LeadCollection.findOne({ _id: collectionId, acctId }, { stages: 1 }).lean();
         const map = {};
-        for (const s of category?.stages || []) map[s.id] = s.name;
+        for (const s of collection?.stages || []) map[s.id] = s.name;
         return map;
     }
 
-    /** Add a stage to a category. Returns the updated, sorted stage list. */
-    async addStage(acctId, categoryId, { name, color } = {}) {
-        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+    /** Add a stage to a collection. Returns the updated, sorted stage list. */
+    async addStage(acctId, collectionId, { name, color } = {}) {
+        const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
         const trimmed = (name || '').trim();
         if (!trimmed) {
@@ -329,25 +329,25 @@ class CategoryService {
             err.statusCode = 400;
             throw err;
         }
-        this._assertStageNameUnique(category.stages, trimmed);
+        this._assertStageNameUnique(collection.stages, trimmed);
 
-        const id    = category.nextStageId || ((Math.max(0, ...category.stages.map(s => s.id)) ) + 1);
-        const order = category.stages.length
-            ? Math.max(...category.stages.map(s => s.order)) + 1
+        const id    = collection.nextStageId || ((Math.max(0, ...collection.stages.map(s => s.id)) ) + 1);
+        const order = collection.stages.length
+            ? Math.max(...collection.stages.map(s => s.order)) + 1
             : 0;
 
-        category.stages.push({ id, name: trimmed, color: normaliseColor(color), order });
-        category.nextStageId = id + 1;
-        await category.save();
+        collection.stages.push({ id, name: trimmed, color: normaliseColor(color), order });
+        collection.nextStageId = id + 1;
+        await collection.save();
 
-        return sortStages(category.stages);
+        return sortStages(collection.stages);
     }
 
     /** Update a stage's name / colour / order. Returns the updated, sorted stage list. */
-    async updateStage(acctId, categoryId, stageId, { name, color, order } = {}) {
-        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+    async updateStage(acctId, collectionId, stageId, { name, color, order } = {}) {
+        const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
-        const stage = category.stages.find(s => s.id === Number(stageId));
+        const stage = collection.stages.find(s => s.id === Number(stageId));
         if (!stage) {
             const err = new Error('Stage not found');
             err.statusCode = 404;
@@ -361,27 +361,27 @@ class CategoryService {
                 err.statusCode = 400;
                 throw err;
             }
-            this._assertStageNameUnique(category.stages, trimmed, stage.id);
+            this._assertStageNameUnique(collection.stages, trimmed, stage.id);
             stage.name = trimmed;
         }
         if (color !== undefined) stage.color = normaliseColor(color);
         if (order !== undefined && !Number.isNaN(Number(order))) stage.order = Number(order);
 
-        await category.save();
-        return sortStages(category.stages);
+        await collection.save();
+        return sortStages(collection.stages);
     }
 
     /** Reorder stages to match the given array of stage ids. Returns the sorted list. */
-    async reorderStages(acctId, categoryId, orderedIds = []) {
-        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+    async reorderStages(acctId, collectionId, orderedIds = []) {
+        const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
         const position = new Map(orderedIds.map((id, idx) => [Number(id), idx]));
-        category.stages.forEach(s => {
+        collection.stages.forEach(s => {
             if (position.has(s.id)) s.order = position.get(s.id);
         });
 
-        await category.save();
-        return sortStages(category.stages);
+        await collection.save();
+        return sortStages(collection.stages);
     }
 
     /**
@@ -391,35 +391,35 @@ class CategoryService {
      *
      * Returns { stages, reassignedCount, reassignedToStageId }.
      */
-    async deleteStage(acctId, categoryId, stageId) {
-        const category = await this._loadCategoryForStageEdit(acctId, categoryId);
+    async deleteStage(acctId, collectionId, stageId) {
+        const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
         const id = Number(stageId);
-        if (!category.stages.some(s => s.id === id)) {
+        if (!collection.stages.some(s => s.id === id)) {
             const err = new Error('Stage not found');
             err.statusCode = 404;
             throw err;
         }
-        if (category.stages.length <= 1) {
-            const err = new Error('At least one stage is required per category');
+        if (collection.stages.length <= 1) {
+            const err = new Error('At least one stage is required per collection');
             err.statusCode = 400;
             throw err;
         }
 
         // First stage among the ones that will remain.
-        const remaining   = sortStages(category.stages.filter(s => s.id !== id));
+        const remaining   = sortStages(collection.stages.filter(s => s.id !== id));
         const targetId    = remaining[0].id;
 
         const reassign = await Lead.updateMany(
-            { acctId, categoryId, stage: id },
+            { acctId, collectionId, stage: id },
             { $set: { stage: targetId } }
         );
 
-        category.stages = remaining;
-        await category.save();
+        collection.stages = remaining;
+        await collection.save();
 
         return {
-            stages:              sortStages(category.stages),
+            stages:              sortStages(collection.stages),
             reassignedCount:     reassign.modifiedCount ?? 0,
             reassignedToStageId: targetId
         };
@@ -427,16 +427,16 @@ class CategoryService {
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    /** Load a category as a Mongoose doc for stage mutation, or throw 404. */
-    async _loadCategoryForStageEdit(acctId, categoryId) {
-        const category = await LeadCategory.findOne({ _id: categoryId, acctId });
-        if (!category) {
-            const err = new Error('Category not found');
+    /** Load a collection as a Mongoose doc for stage mutation, or throw 404. */
+    async _loadCollectionForStageEdit(acctId, collectionId) {
+        const collection = await LeadCollection.findOne({ _id: collectionId, acctId });
+        if (!collection) {
+            const err = new Error('Collection not found');
             err.statusCode = 404;
             throw err;
         }
-        if (!Array.isArray(category.stages)) category.stages = [];
-        return category;
+        if (!Array.isArray(collection.stages)) collection.stages = [];
+        return collection;
     }
 
     /** Throw 409 if `name` collides (case-insensitive) with another stage. */
@@ -444,7 +444,7 @@ class CategoryService {
         const lower = name.toLowerCase();
         const clash = stages.some(s => s.id !== exceptId && s.name.toLowerCase() === lower);
         if (clash) {
-            const err = new Error(`A stage named "${name}" already exists in this category`);
+            const err = new Error(`A stage named "${name}" already exists in this collection`);
             err.statusCode = 409;
             throw err;
         }
@@ -489,4 +489,4 @@ class CategoryService {
     }
 }
 
-export default new CategoryService();
+export default new CollectionService();

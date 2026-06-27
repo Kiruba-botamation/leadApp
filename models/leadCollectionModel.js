@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 /**
- * Column definition stored inside a category.
+ * Column definition stored inside a collection.
  * label  — display name shown in the grid header (e.g. "First Name")
  * field  — MongoDB key used in lead documents (e.g. "first_name")
  * type   — data type drives grid filter UI and query building
@@ -16,10 +16,10 @@ const columnDefSchema = new mongoose.Schema(
 );
 
 /**
- * Lead stage (pipeline step) embedded in a category.
- * id    — stable integer id, assigned from the category's nextStageId counter and NEVER reused.
+ * Lead stage (pipeline step) embedded in a collection.
+ * id    — stable integer id, assigned from the collection's nextStageId counter and NEVER reused.
  *         Leads reference this id; reordering changes `order`, never `id`.
- * name  — display name (e.g. "New", "In Progress"). Unique (case-insensitive) within a category.
+ * name  — display name (e.g. "New", "In Progress"). Unique (case-insensitive) within a collection.
  * color — hex colour chosen by the admin, used for the grid pill.
  * order — display position; the "first stage" is the one with the lowest order.
  */
@@ -33,7 +33,7 @@ const stageSchema = new mongoose.Schema(
     { _id: false }
 );
 
-const leadCategorySchema = new mongoose.Schema(
+const leadCollectionSchema = new mongoose.Schema(
     {
         _id: {
             type: String,
@@ -43,7 +43,7 @@ const leadCategorySchema = new mongoose.Schema(
             type: String,
             required: true
         },
-        categoryName: {
+        collectionName: {
             type: String,
             required: true
         },
@@ -54,16 +54,16 @@ const leadCategorySchema = new mongoose.Schema(
         /**
          * User-defined column definitions.
          * System fields (id, responsible) are NOT stored here —
-         * they are injected at read-time by categoryService.
+         * they are injected at read-time by collectionService.
          */
         fields: {
             type: [columnDefSchema],
             default: []
         },
         /**
-         * Pipeline stages for this category. Every category has at least one
+         * Pipeline stages for this collection. Every collection has at least one
          * (a default "New" stage is seeded on creation). Embedded so they are
-         * loaded atomically with the category and cascade-deleted with it.
+         * loaded atomically with the collection and cascade-deleted with it.
          */
         stages: {
             type: [stageSchema],
@@ -80,11 +80,11 @@ const leadCategorySchema = new mongoose.Schema(
     }
 );
 
-leadCategorySchema.index({ acctId: 1 });
-leadCategorySchema.index({ acctId: 1, categoryName: 1 }, { unique: true });
+leadCollectionSchema.index({ acctId: 1 });
+leadCollectionSchema.index({ acctId: 1, collectionName: 1 }, { unique: true });
 
-leadCategorySchema.set('collection', 'lead_categories');
+leadCollectionSchema.set('collection', 'lead_collections');
 
-const LeadCategory = mongoose.model('LeadCategory', leadCategorySchema);
+const LeadCollection = mongoose.model('LeadCollection', leadCollectionSchema);
 
-export default LeadCategory;
+export default LeadCollection;

@@ -13,10 +13,10 @@ import { buildSystemPrompt, formatHistoryForOpenAI } from '../schemas/analyticsC
 /**
  * @param {string} message
  * @param {Array<{ role: 'user'|'assistant', text: string }>} history
- * @param {Array<{ _id: string, categoryName: string, fields: string[] }>} categoriesWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
  * @returns {Promise<object>}
  */
-export async function generateAnalyticsCharts(message, history = [], categoriesWithFields = []) {
+export async function generateAnalyticsCharts(message, history = [], collectionsWithFields = []) {
     // TODO: implement when switching to Grok
     // Grok uses an OpenAI-compatible API with a different base URL:
     //
@@ -27,7 +27,7 @@ export async function generateAnalyticsCharts(message, history = [], categoriesW
     // });
     //
     // const messages = [
-    //     { role: 'system', content: buildSystemPrompt(categoriesWithFields) },
+    //     { role: 'system', content: buildSystemPrompt(collectionsWithFields) },
     //     ...formatHistoryForOpenAI(history),
     //     { role: 'user', content: message },
     // ];

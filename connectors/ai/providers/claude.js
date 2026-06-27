@@ -13,10 +13,10 @@ import { buildSystemPrompt, responseJsonSchema, formatHistoryForOpenAI } from '.
 /**
  * @param {string} message
  * @param {Array<{ role: 'user'|'assistant', text: string }>} history
- * @param {Array<{ _id: string, categoryName: string, fields: string[] }>} categoriesWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
  * @returns {Promise<object>}
  */
-export async function generateAnalyticsCharts(message, history = [], categoriesWithFields = []) {
+export async function generateAnalyticsCharts(message, history = [], collectionsWithFields = []) {
     // TODO: implement when switching to Claude
     // Example implementation:
     //
@@ -31,7 +31,7 @@ export async function generateAnalyticsCharts(message, history = [], categoriesW
     // const response = await client.messages.create({
     //     model: 'claude-3-5-sonnet-20241022',
     //     max_tokens: 2048,
-    //     system: buildSystemPrompt(categoriesWithFields),
+    //     system: buildSystemPrompt(collectionsWithFields),
     //     messages,
     // });
     //

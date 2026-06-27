@@ -1,52 +1,52 @@
 import Lead from '../models/leadModel.js';
-import LeadCategory from '../models/leadCategoryModel.js';
+import LeadCollection from '../models/leadCollectionModel.js';
 import { performUpsert, performGet, performDelete, perfomDataExistanceCheck } from '../config/mongoConnector.js';
-import categoryService, { SYSTEM_FIELDS, STAGE_FIELD } from './categoryService.js';
+import collectionService, { SYSTEM_FIELDS, STAGE_FIELD } from './collectionService.js';
 import { emitEvent, EVENTS } from './eventBus.js';
 
 /** Sentinel values that mean "clear the responsible / unassign". */
 const UNASSIGNED_VALUES = new Set(['', 'none', 'None', null, undefined]);
 
 /** Fields that are internal / framework-managed and should never be treated as lead data */
-const INTERNAL_FIELDS = new Set(['_id', 'acctId', 'categoryId', '__v', 'createdAt', 'updatedAt', 'category']);
+const INTERNAL_FIELDS = new Set(['_id', 'acctId', 'collectionId', '__v', 'createdAt', 'updatedAt', 'collection']);
 
 class LeadService {
     /**
      * Create one or more leads.
      *
      * Validation rules:
-     *  - The category must already exist in the DB.
-     *  - Every key in the payload must be a field defined in the category (system or user-defined).
+     *  - The collection must already exist in the DB.
+     *  - Every key in the payload must be a field defined in the collection (system or user-defined).
      *  - The "id" field is mandatory (system field).
      *
      * @param {object|object[]} leadData   — single lead object or array
      * @param {string}          acctId
-     * @param {string|null}     category   — category name (uses default when null)
+     * @param {string|null}     collection — collection name (uses default when null)
      * @param {string[]|null}   mergeProperties
      */
-    async createLead(leadData, acctId, category = null, mergeProperties = null) {
-        const categoryName = category || 'default';
+    async createLead(leadData, acctId, collection = null, mergeProperties = null) {
+        const collectionName = collection || 'default';
 
-        // ── 1. Resolve & validate category ──────────────────────────────────
-        const categoryDoc = await categoryService.findByName(acctId, categoryName);
-        if (!categoryDoc) {
-            const err = new Error(`Category "${categoryName}" not found. Create it in Settings → Category before pushing data.`);
+        // ── 1. Resolve & validate collection ────────────────────────────────
+        const collectionDoc = await collectionService.findByName(acctId, collectionName);
+        if (!collectionDoc) {
+            const err = new Error(`Collection "${collectionName}" not found. Create it in Settings → Collection before pushing data.`);
             err.statusCode = 404;
             throw err;
         }
-        const categoryId = categoryDoc._id;
+        const collectionId = collectionDoc._id;
 
         // Build set of allowed field keys: system + stage + user-defined
         const allowedFields = new Set([
             ...SYSTEM_FIELDS.map(f => f.field),
             STAGE_FIELD.field,
-            ...(categoryDoc.fields || []).map(f => f.field)
+            ...(collectionDoc.fields || []).map(f => f.field)
         ]);
 
         // Stage resolution: valid ids, the default (first) stage, and id→name for events.
-        const stageIds        = new Set((categoryDoc.stages || []).map(s => s.id));
-        const defaultStageId  = categoryService.getFirstStageId(categoryDoc);
-        const stageNameById   = new Map((categoryDoc.stages || []).map(s => [s.id, s.name]));
+        const stageIds        = new Set((collectionDoc.stages || []).map(s => s.id));
+        const defaultStageId  = collectionService.getFirstStageId(collectionDoc);
+        const stageNameById   = new Map((collectionDoc.stages || []).map(s => [s.id, s.name]));
 
         const hasStageValue = (v) => v !== undefined && v !== null && v !== '';
 
@@ -65,10 +65,10 @@ class LeadService {
                 throw err;
             }
 
-            // A supplied stage must be one of the category's stage ids.
+            // A supplied stage must be one of the collection's stage ids.
             if (hasStageValue(item.stage) && !stageIds.has(Number(item.stage))) {
                 const err = new Error(
-                    `Unknown stage "${item.stage}" for category "${categoryName}". ` +
+                    `Unknown stage "${item.stage}" for collection "${collectionName}". ` +
                     `Use one of: ${[...stageIds].join(', ') || '(none)'}.`
                 );
                 err.statusCode = 400;
@@ -79,8 +79,8 @@ class LeadService {
             const unknownFields = Object.keys(item).filter(k => !INTERNAL_FIELDS.has(k) && !allowedFields.has(k));
             if (unknownFields.length > 0) {
                 const err = new Error(
-                    `Unknown field(s) for category "${categoryName}": ${unknownFields.join(', ')}. ` +
-                    `Define them in Settings → Category before using them.`
+                    `Unknown field(s) for collection "${collectionName}": ${unknownFields.join(', ')}. ` +
+                    `Define them in Settings → Collection before using them.`
                 );
                 err.statusCode = 400;
                 throw err;
@@ -88,9 +88,9 @@ class LeadService {
         }
 
         // ── 3. Insert lead(s) ───────────────────────────────────────────────
-        // Default the stage to the category's first stage when omitted; coerce to Number.
+        // Default the stage to the collection's first stage when omitted; coerce to Number.
         const addMeta = (item) => {
-            const meta = { ...item, acctId, categoryId };
+            const meta = { ...item, acctId, collectionId };
             const sid = hasStageValue(item.stage) ? Number(item.stage) : defaultStageId;
             if (sid !== null && sid !== undefined) meta.stage = sid;
             return meta;
@@ -138,7 +138,7 @@ class LeadService {
             emitEvent(EVENTS.LEAD_CREATED, { acctId, data: { leadId: lead._id, lead, stage } });
         }
 
-        return { lead: leadResult, categoryId };
+        return { lead: leadResult, collectionId };
     }
 
     /**
@@ -147,8 +147,8 @@ class LeadService {
      * Filters are passed as a `fieldFilters` JSON string for typed filtering:
      *   { fieldName: { type: 'text'|'number'|'date'|'boolean', value?, op?, min?, max?, from?, to? } }
      *
-     * categoryFields is intentionally NOT returned here — the UI fetches column
-     * definitions separately via GET /categories/:id/fields.
+     * collectionFields is intentionally NOT returned here — the UI fetches column
+     * definitions separately via GET /collections/:id/fields.
      */
     async getAllLeads(filters = {}) {
         const {
@@ -158,7 +158,7 @@ class LeadService {
             sortOrder = -1,
             search,
             acctId,
-            categoryId,
+            collectionId,
             fieldFilters: fieldFiltersRaw,
             responsibleFilter,
             // Per-admin visibility: superadmins see all leads; everyone else sees
@@ -170,7 +170,7 @@ class LeadService {
         const restrictToOwn = accessLevel !== 'superadmin' && !!userId;
 
         const query = { acctId };
-        if (categoryId) query.categoryId = categoryId;
+        if (collectionId) query.collectionId = collectionId;
         if (restrictToOwn) {
             query.responsible = userId;
         } else if (accessLevel === 'superadmin' && responsibleFilter) {
@@ -196,7 +196,7 @@ class LeadService {
         // ── Global text search across string fields ──────────────────────────
         if (search) {
             const scopeConditions = [{ acctId }];
-            if (categoryId) scopeConditions.push({ categoryId });
+            if (collectionId) scopeConditions.push({ collectionId });
             if (restrictToOwn) scopeConditions.push({ responsible: userId });
             else if (accessLevel === 'superadmin' && responsibleFilter) {
                 if (responsibleFilter === '__unassigned__') {
@@ -211,7 +211,7 @@ class LeadService {
             const searchConditions = stringFields.map(field => ({ [field]: { $regex: search, $options: 'i' } }));
             query.$and = [...scopeConditions, { $or: searchConditions }];
             delete query.acctId;
-            delete query.categoryId;
+            delete query.collectionId;
             delete query.responsible;
         }
 
@@ -264,13 +264,13 @@ class LeadService {
 
         const [aggResult] = await Lead.aggregate(pipeline).option({ allowDiskUse: true });
 
-        // Expose the category's field keys (system + stage + user-defined) so the
+        // Expose the collection's field keys (system + stage + user-defined) so the
         // analytics axis pickers have a source of truth. Account-wide view (no
-        // categoryId) falls back to system fields + stage only.
+        // collectionId) falls back to system fields + stage only.
         let fields = [...SYSTEM_FIELDS.map(f => f.field), STAGE_FIELD.field];
-        if (categoryId) {
-            const cat = await LeadCategory.findOne({ _id: categoryId, acctId }, { fields: 1 }).lean();
-            if (cat) fields = [...SYSTEM_FIELDS.map(f => f.field), STAGE_FIELD.field, ...(cat.fields || []).map(f => f.field)];
+        if (collectionId) {
+            const col = await LeadCollection.findOne({ _id: collectionId, acctId }, { fields: 1 }).lean();
+            if (col) fields = [...SYSTEM_FIELDS.map(f => f.field), STAGE_FIELD.field, ...(col.fields || []).map(f => f.field)];
         }
 
         return {
@@ -304,7 +304,7 @@ class LeadService {
      * @param {object} context  { acctId, prevResponsible }
      */
     async updateLead(id, updateData, context = {}) {
-        const { acctId, prevResponsible = null, prevStage = null, categoryId = null } = context;
+        const { acctId, prevResponsible = null, prevStage = null, collectionId = null } = context;
         const data = { ...updateData };
 
         const hasResponsible = Object.prototype.hasOwnProperty.call(data, 'responsible');
@@ -349,7 +349,7 @@ class LeadService {
 
         // Emit a stage-change event when the lead actually moves to a different stage.
         if (hasStage && nextStageNum !== null && prevStageNum !== nextStageNum) {
-            const stageMap = categoryId ? await categoryService.resolveStageMap(acctId, categoryId) : {};
+            const stageMap = collectionId ? await collectionService.resolveStageMap(acctId, collectionId) : {};
             emitEvent(EVENTS.LEAD_STAGE_CHANGED, {
                 acctId,
                 data: {

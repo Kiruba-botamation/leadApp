@@ -18,8 +18,8 @@ import { getAdminsFromDb, setAdminAccessLevel } from '../services/adminService.j
 import AccountAdmin from '../models/accountAdminModel.js';
 import Role from '../models/roleModel.js';
 import Lead from '../models/leadModel.js';
-import LeadCategory from '../models/leadCategoryModel.js';
-import { normaliseCategoryName } from '../services/categoryService.js';
+import LeadCollection from '../models/leadCollectionModel.js';
+import { normaliseCollectionName } from '../services/collectionService.js';
 import { invalidateAdminCache } from '../middleware/ssoAuthMiddleware.js';
 import { checkRateLimit } from '../utils/rateLimit.js';
 import logger from '../utils/logger.js';
@@ -65,12 +65,12 @@ const TOOLS = [
     },
     {
         name: 'get_stages',
-        description: 'List the lead stages of a category (id, name, colour). Use this to resolve a stage name like "hot" or "new" to its numeric stage id before calling get_lead_stats. Omit "category" to use the account default category.',
+        description: 'List the lead stages of a collection (id, name, colour). Use this to resolve a stage name like "hot" or "new" to its numeric stage id before calling get_lead_stats. Omit "collection" to use the account default collection.',
         inputSchema: {
             type: 'object',
             properties: {
                 acctId: { type: 'string', description: 'The account id' },
-                category: { type: 'string', description: 'Optional category name; defaults to the account default category' }
+                collection: { type: 'string', description: 'Optional collection name; defaults to the account default collection' }
             },
             required: ['acctId']
         }
@@ -82,9 +82,9 @@ const TOOLS = [
             type: 'object',
             properties: {
                 acctId:      { type: 'string', description: 'The account id' },
-                category:    { type: 'string', description: 'Optional category name; defaults to the account default category' },
+                collection:  { type: 'string', description: 'Optional collection name; defaults to the account default collection' },
                 stage:       { type: 'number', description: 'Optional numeric stage id' },
-                stageName:   { type: 'string', description: 'Optional stage name (resolved to an id within the category)' },
+                stageName:   { type: 'string', description: 'Optional stage name (resolved to an id within the collection)' },
                 responsible: { type: 'string', description: 'Optional responsible admin userId' },
                 adminName:   { type: 'string', description: 'Optional admin name (resolved to a userId)' },
                 dateFrom:    { type: 'string', description: 'Optional ISO date — count leads created on/after this' },
@@ -103,18 +103,18 @@ const callerAccessLevel = async (userId, acctId) => {
     return rec?.accessLevel ?? null;
 };
 
-/** Resolve a category by name (normalised) or fall back to the account default. Throws if none. */
-const resolveCategory = async (acctId, categoryName) => {
-    let category;
-    if (categoryName) {
-        category = await LeadCategory.findOne({ acctId, categoryName: normaliseCategoryName(categoryName) }).lean();
-        if (!category) throw new Error(`Category "${categoryName}" not found`);
+/** Resolve a collection by name (normalised) or fall back to the account default. Throws if none. */
+const resolveCollection = async (acctId, collectionName) => {
+    let collection;
+    if (collectionName) {
+        collection = await LeadCollection.findOne({ acctId, collectionName: normaliseCollectionName(collectionName) }).lean();
+        if (!collection) throw new Error(`Collection "${collectionName}" not found`);
     } else {
-        category = await LeadCategory.findOne({ acctId, default: true }).lean()
-            || await LeadCategory.findOne({ acctId }).lean();
-        if (!category) throw new Error('No categories exist for this account');
+        collection = await LeadCollection.findOne({ acctId, default: true }).lean()
+            || await LeadCollection.findOne({ acctId }).lean();
+        if (!collection) throw new Error('No collections exist for this account');
     }
-    return category;
+    return collection;
 };
 
 const toolHandlers = {
@@ -153,28 +153,28 @@ const toolHandlers = {
 
     async get_stages(args) {
         if (!args?.acctId) throw new Error('acctId is required');
-        const category = await resolveCategory(args.acctId, args.category);
-        const stages = [...(category.stages || [])].sort((a, b) => (a.order - b.order) || (a.id - b.id));
+        const collection = await resolveCollection(args.acctId, args.collection);
+        const stages = [...(collection.stages || [])].sort((a, b) => (a.order - b.order) || (a.id - b.id));
         return {
-            category: category.categoryName,
+            collection: collection.collectionName,
             stages: stages.map(s => ({ id: s.id, name: s.name, color: s.color }))
         };
     },
 
     async get_lead_stats(args) {
         if (!args?.acctId) throw new Error('acctId is required');
-        const category = await resolveCategory(args.acctId, args.category);
+        const collection = await resolveCollection(args.acctId, args.collection);
 
-        const match = { acctId: args.acctId, categoryId: category._id };
+        const match = { acctId: args.acctId, collectionId: collection._id };
 
-        // ── Resolve stage (id directly, or by name within the category) ──
+        // ── Resolve stage (id directly, or by name within the collection) ──
         let stageId = null;
         if (args.stage !== undefined && args.stage !== null && args.stage !== '') {
             stageId = Number(args.stage);
         } else if (args.stageName) {
             const lower = String(args.stageName).toLowerCase();
-            const found = (category.stages || []).find(s => s.name.toLowerCase() === lower);
-            if (!found) throw new Error(`Stage "${args.stageName}" not found in category "${category.categoryName}"`);
+            const found = (collection.stages || []).find(s => s.name.toLowerCase() === lower);
+            if (!found) throw new Error(`Stage "${args.stageName}" not found in collection "${collection.collectionName}"`);
             stageId = found.id;
         }
         if (stageId !== null) match.stage = stageId;
@@ -206,8 +206,8 @@ const toolHandlers = {
 
         const count = await Lead.countDocuments(match);
 
-        const result = { category: category.categoryName, count };
-        if (stageId !== null) result.stage = { id: stageId, name: (category.stages || []).find(s => s.id === stageId)?.name ?? null };
+        const result = { collection: collection.collectionName, count };
+        if (stageId !== null) result.stage = { id: stageId, name: (collection.stages || []).find(s => s.id === stageId)?.name ?? null };
         if (responsibleId !== null) result.responsible = responsibleId;
 
         // When not filtered by a single stage, also return a per-stage breakdown.
@@ -216,7 +216,7 @@ const toolHandlers = {
                 { $match: match },
                 { $group: { _id: '$stage', count: { $sum: 1 } } }
             ]);
-            const nameById = new Map((category.stages || []).map(s => [s.id, s.name]));
+            const nameById = new Map((collection.stages || []).map(s => [s.id, s.name]));
             result.breakdown = grouped
                 .map(g => ({ stage: g._id ?? null, name: nameById.get(g._id) ?? (g._id == null ? 'No stage' : 'Unknown'), count: g.count }))
                 .sort((a, b) => b.count - a.count);

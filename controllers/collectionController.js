@@ -1,108 +1,108 @@
-import categoryService from '../services/categoryService.js';
+import collectionService from '../services/collectionService.js';
 
 /**
- * Controller for all category management operations.
- * All routes here are SSO-protected (/api/ui/leads/categories/*).
+ * Controller for all collection management operations.
+ * All routes here are SSO-protected (/api/ui/leads/collections/*).
  */
-class CategoryController {
+class CollectionController {
     /** Shared helper: resolve acctId from request */
     _resolveAcctId(req) {
         return req.query.acctId || req.headers['x-acctno'] || req.acctId || null;
     }
 
     /**
-     * GET /api/ui/leads/categories
-     * Returns a lightweight list of categories (no field details).
+     * GET /api/ui/leads/collections
+     * Returns a lightweight list of collections (no field details).
      */
-    async getCategories(req, res) {
+    async getCollections(req, res) {
         try {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const data = await categoryService.getCategories(acctId);
+            const data = await collectionService.getCollections(acctId);
             return res.status(200).json({ success: true, data });
         } catch (error) {
-            console.error('[CategoryController] getCategories:', error);
+            console.error('[CollectionController] getCollections:', error);
             return res.status(error.statusCode || 500).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * GET /api/ui/leads/categories/:categoryId/fields
-     * Returns full column definitions (system + user-defined) for one category.
+     * GET /api/ui/leads/collections/:collectionId/fields
+     * Returns full column definitions (system + user-defined) for one collection.
      */
-    async getCategoryFields(req, res) {
+    async getCollectionFields(req, res) {
         try {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId } = req.params;
-            const data = await categoryService.getCategoryFields(acctId, categoryId);
+            const { collectionId } = req.params;
+            const data = await collectionService.getCollectionFields(acctId, collectionId);
             return res.status(200).json({ success: true, data });
         } catch (error) {
             if (error.statusCode === 404) return res.status(404).json({ success: false, message: error.message });
-            console.error('[CategoryController] getCategoryFields:', error);
+            console.error('[CollectionController] getCollectionFields:', error);
             return res.status(500).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * POST /api/ui/leads/categories
-     * Body: { categoryName, fields?: [{ label, type }] }
+     * POST /api/ui/leads/collections
+     * Body: { collectionName, fields?: [{ label, type }] }
      */
-    async createCategory(req, res) {
+    async createCollection(req, res) {
         try {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryName, fields = [] } = req.body;
-            if (!categoryName) return res.status(400).json({ success: false, message: 'categoryName is required' });
+            const { collectionName, fields = [] } = req.body;
+            if (!collectionName) return res.status(400).json({ success: false, message: 'collectionName is required' });
 
-            const data = await categoryService.createCategory(acctId, categoryName, fields);
-            return res.status(201).json({ success: true, message: 'Category created successfully', data });
+            const data = await collectionService.createCollection(acctId, collectionName, fields);
+            return res.status(201).json({ success: true, message: 'Collection created successfully', data });
         } catch (error) {
             if (error.statusCode === 409) return res.status(409).json({ success: false, message: error.message });
-            console.error('[CategoryController] createCategory:', error);
+            console.error('[CollectionController] createCollection:', error);
             return res.status(error.statusCode || 400).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * PUT /api/ui/leads/categories/:categoryId
-     * Body: { categoryName?, fields?: [{ label, type }] }
+     * PUT /api/ui/leads/collections/:collectionId
+     * Body: { collectionName?, fields?: [{ label, type }] }
      */
-    async updateCategory(req, res) {
+    async updateCollection(req, res) {
         try {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId } = req.params;
-            const { categoryName, fields } = req.body;
+            const { collectionId } = req.params;
+            const { collectionName, fields } = req.body;
 
-            const data = await categoryService.updateCategory(acctId, categoryId, { categoryName, fields });
-            return res.status(200).json({ success: true, message: 'Category updated successfully', data });
+            const data = await collectionService.updateCollection(acctId, collectionId, { collectionName, fields });
+            return res.status(200).json({ success: true, message: 'Collection updated successfully', data });
         } catch (error) {
             if (error.statusCode === 404) return res.status(404).json({ success: false, message: error.message });
             if (error.statusCode === 409) return res.status(409).json({ success: false, message: error.message });
-            console.error('[CategoryController] updateCategory:', error);
+            console.error('[CollectionController] updateCollection:', error);
             return res.status(error.statusCode || 400).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * PUT /api/ui/leads/categories/:categoryId/default
+     * PUT /api/ui/leads/collections/:collectionId/default
      */
-    async setDefaultCategory(req, res) {
+    async setDefaultCollection(req, res) {
         try {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId } = req.params;
-            const data = await categoryService.setDefaultCategory(acctId, categoryId);
-            return res.status(200).json({ success: true, message: 'Default category updated', data });
+            const { collectionId } = req.params;
+            const data = await collectionService.setDefaultCollection(acctId, collectionId);
+            return res.status(200).json({ success: true, message: 'Default collection updated', data });
         } catch (error) {
             if (error.statusCode === 404) return res.status(404).json({ success: false, message: error.message });
-            console.error('[CategoryController] setDefaultCategory:', error);
+            console.error('[CollectionController] setDefaultCollection:', error);
             return res.status(error.statusCode || 400).json({ success: false, message: error.message });
         }
     }
@@ -110,7 +110,7 @@ class CategoryController {
     // ── Stage management ─────────────────────────────────────────────────────
 
     /**
-     * POST /api/ui/leads/categories/:categoryId/stages
+     * POST /api/ui/leads/collections/:collectionId/stages
      * Body: { name, color? }
      */
     async addStage(req, res) {
@@ -118,18 +118,18 @@ class CategoryController {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId } = req.params;
+            const { collectionId } = req.params;
             const { name, color } = req.body;
-            const stages = await categoryService.addStage(acctId, categoryId, { name, color });
+            const stages = await collectionService.addStage(acctId, collectionId, { name, color });
             return res.status(201).json({ success: true, message: 'Stage added', data: stages });
         } catch (error) {
-            console.error('[CategoryController] addStage:', error);
+            console.error('[CollectionController] addStage:', error);
             return res.status(error.statusCode || 400).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * PUT /api/ui/leads/categories/:categoryId/stages/reorder
+     * PUT /api/ui/leads/collections/:collectionId/stages/reorder
      * Body: { orderedIds: [Number] }
      */
     async reorderStages(req, res) {
@@ -137,18 +137,18 @@ class CategoryController {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId } = req.params;
+            const { collectionId } = req.params;
             const { orderedIds = [] } = req.body;
-            const stages = await categoryService.reorderStages(acctId, categoryId, orderedIds);
+            const stages = await collectionService.reorderStages(acctId, collectionId, orderedIds);
             return res.status(200).json({ success: true, message: 'Stages reordered', data: stages });
         } catch (error) {
-            console.error('[CategoryController] reorderStages:', error);
+            console.error('[CollectionController] reorderStages:', error);
             return res.status(error.statusCode || 400).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * PUT /api/ui/leads/categories/:categoryId/stages/:stageId
+     * PUT /api/ui/leads/collections/:collectionId/stages/:stageId
      * Body: { name?, color?, order? }
      */
     async updateStage(req, res) {
@@ -156,18 +156,18 @@ class CategoryController {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId, stageId } = req.params;
+            const { collectionId, stageId } = req.params;
             const { name, color, order } = req.body;
-            const stages = await categoryService.updateStage(acctId, categoryId, stageId, { name, color, order });
+            const stages = await collectionService.updateStage(acctId, collectionId, stageId, { name, color, order });
             return res.status(200).json({ success: true, message: 'Stage updated', data: stages });
         } catch (error) {
-            console.error('[CategoryController] updateStage:', error);
+            console.error('[CollectionController] updateStage:', error);
             return res.status(error.statusCode || 400).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * DELETE /api/ui/leads/categories/:categoryId/stages/:stageId
+     * DELETE /api/ui/leads/collections/:collectionId/stages/:stageId
      * Reassigns leads in the stage to the first remaining stage.
      */
     async deleteStage(req, res) {
@@ -175,40 +175,40 @@ class CategoryController {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId, stageId } = req.params;
-            const result = await categoryService.deleteStage(acctId, categoryId, stageId);
+            const { collectionId, stageId } = req.params;
+            const result = await collectionService.deleteStage(acctId, collectionId, stageId);
             return res.status(200).json({
                 success: true,
                 message: `Stage deleted${result.reassignedCount ? `; ${result.reassignedCount} lead(s) reassigned` : ''}`,
                 data:    result
             });
         } catch (error) {
-            console.error('[CategoryController] deleteStage:', error);
+            console.error('[CollectionController] deleteStage:', error);
             return res.status(error.statusCode || 400).json({ success: false, message: error.message });
         }
     }
 
     /**
-     * DELETE /api/ui/leads/categories/:categoryId
+     * DELETE /api/ui/leads/collections/:collectionId
      */
-    async deleteCategory(req, res) {
+    async deleteCollection(req, res) {
         try {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
-            const { categoryId } = req.params;
-            const result = await categoryService.deleteCategory(acctId, categoryId);
+            const { collectionId } = req.params;
+            const result = await collectionService.deleteCollection(acctId, collectionId);
             return res.status(200).json({
                 success: true,
-                message: `Category "${result.categoryName}" and ${result.deletedLeads} associated lead(s) deleted successfully`,
+                message: `Collection "${result.collectionName}" and ${result.deletedLeads} associated lead(s) deleted successfully`,
                 data:    result
             });
         } catch (error) {
             if (error.statusCode === 404) return res.status(404).json({ success: false, message: error.message });
-            console.error('[CategoryController] deleteCategory:', error);
+            console.error('[CollectionController] deleteCollection:', error);
             return res.status(500).json({ success: false, message: error.message });
         }
     }
 }
 
-export default new CategoryController();
+export default new CollectionController();

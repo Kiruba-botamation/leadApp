@@ -9,8 +9,8 @@
  * {
  *   eventType       : 'lead-upsert'
  *   acctId          : string   — authenticated account id
- *   leadPayload     : object | object[]  — lead field data (category already stripped)
- *   category        : string | null      — resolved category name
+ *   leadPayload     : object | object[]  — lead field data (collection already stripped)
+ *   collection      : string | null      — resolved collection name
  *   mergeProperties : string[] | null    — fields used as merge key for upsert
  * }
  */
@@ -27,12 +27,12 @@ export const eventType = 'lead-upsert';
  * @returns {Promise<{ leadId: string|string[] }>}
  */
 export const processor = async (job) => {
-  const { acctId, leadPayload, category, mergeProperties } = job.data;
+  const { acctId, leadPayload, collection, mergeProperties } = job.data;
 
-  logger.info(`[LeadProcessor] Job [${job.id}] | acctId=${acctId} | category=${category ?? 'default'} | attempt=${job.attemptsMade + 1}`);
+  logger.info(`[LeadProcessor] Job [${job.id}] | acctId=${acctId} | collection=${collection ?? 'default'} | attempt=${job.attemptsMade + 1}`);
 
   try {
-    const result = await leadService.createLead(leadPayload, acctId, category, mergeProperties);
+    const result = await leadService.createLead(leadPayload, acctId, collection, mergeProperties);
 
     // Normalise the lead result to an id or array of ids for the job return value
     const leadId = Array.isArray(result.lead)

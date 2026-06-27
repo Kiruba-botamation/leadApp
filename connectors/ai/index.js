@@ -26,7 +26,7 @@ const PROVIDERS = {
 
 /**
  * Returns the active AI provider module.
- * Each provider must export: generateAnalyticsCharts(message, history, categoriesWithFields)
+ * Each provider must export: generateAnalyticsCharts(message, history, collectionsWithFields)
  *
  * @param {string} [name] - Override provider name (defaults to AI_PROVIDER env var → 'gemini')
  * @returns {{ generateAnalyticsCharts: Function }}

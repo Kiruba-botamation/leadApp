@@ -2,7 +2,7 @@
  * gemini.js — Google Gemini AI provider
  * ────────────────────────────────────────────────────────────────────────────
  * Implements the standard provider interface:
- *   generateAnalyticsCharts(message, history, categoriesWithFields) → response
+ *   generateAnalyticsCharts(message, history, collectionsWithFields) → response
  * ────────────────────────────────────────────────────────────────────────────
  */
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -19,10 +19,10 @@ const MODEL_NAME = 'gemini-2.5-flash';
  *
  * @param {string} message - Latest user message
  * @param {Array<{ role: 'user'|'assistant', text: string }>} history - Prior conversation turns
- * @param {Array<{ _id: string, categoryName: string, fields: string[] }>} categoriesWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
  * @returns {Promise<{ type: 'followUp'|'charts', message: string, quickReplies?: string[], charts?: object[] }>}
  */
-export async function generateAnalyticsCharts(message, history = [], categoriesWithFields = [], currentCharts = []) {
+export async function generateAnalyticsCharts(message, history = [], collectionsWithFields = [], currentCharts = []) {
     if (!process.env.GOOGLE_AI_API_KEY) {
         throw new Error('GOOGLE_AI_API_KEY is not configured. Add it to your .env file.');
     }
@@ -32,7 +32,7 @@ export async function generateAnalyticsCharts(message, history = [], categoriesW
     const model = genAI.getGenerativeModel({
         model: MODEL_NAME,
         systemInstruction: {
-            parts: [{ text: buildSystemPrompt(categoriesWithFields, currentCharts) }],
+            parts: [{ text: buildSystemPrompt(collectionsWithFields, currentCharts) }],
         },
         generationConfig: {
             temperature: 0.3,

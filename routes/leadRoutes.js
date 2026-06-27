@@ -1,42 +1,42 @@
 import express from 'express';
 import leadController from '../controllers/leadController.js';
-import categoryController from '../controllers/categoryController.js';
+import collectionController from '../controllers/collectionController.js';
 
 const router = express.Router();
 
-// ── Category management (SSO-only — mounted under /api/ui/leads) ─────────────
+// ── Collection management (SSO-only — mounted under /api/ui/leads) ────────────
 
-/** List all categories (lightweight — no field details) */
-router.get('/categories', categoryController.getCategories.bind(categoryController));
+/** List all collections (lightweight — no field details) */
+router.get('/collections', collectionController.getCollections.bind(collectionController));
 
-/** Get full column definitions for one category */
-router.get('/categories/:categoryId/fields', categoryController.getCategoryFields.bind(categoryController));
+/** Get full column definitions for one collection */
+router.get('/collections/:collectionId/fields', collectionController.getCollectionFields.bind(collectionController));
 
-/** Create a new category */
-router.post('/categories', categoryController.createCategory.bind(categoryController));
+/** Create a new collection */
+router.post('/collections', collectionController.createCollection.bind(collectionController));
 
-/** Update category name and/or column definitions */
-router.put('/categories/:categoryId', categoryController.updateCategory.bind(categoryController));
+/** Update collection name and/or column definitions */
+router.put('/collections/:collectionId', collectionController.updateCollection.bind(collectionController));
 
-/** Set a category as the account default */
-router.put('/categories/:categoryId/default', categoryController.setDefaultCategory.bind(categoryController));
+/** Set a collection as the account default */
+router.put('/collections/:collectionId/default', collectionController.setDefaultCollection.bind(collectionController));
 
-/** Delete a category and all its leads */
-router.delete('/categories/:categoryId', categoryController.deleteCategory.bind(categoryController));
+/** Delete a collection and all its leads */
+router.delete('/collections/:collectionId', collectionController.deleteCollection.bind(collectionController));
 
-// ── Stage management (embedded in a category) ────────────────────────────────
+// ── Stage management (embedded in a collection) ──────────────────────────────
 
-/** Add a stage to a category */
-router.post('/categories/:categoryId/stages', categoryController.addStage.bind(categoryController));
+/** Add a stage to a collection */
+router.post('/collections/:collectionId/stages', collectionController.addStage.bind(collectionController));
 
 /** Reorder stages — must precede the :stageId route so "reorder" isn't read as an id */
-router.put('/categories/:categoryId/stages/reorder', categoryController.reorderStages.bind(categoryController));
+router.put('/collections/:collectionId/stages/reorder', collectionController.reorderStages.bind(collectionController));
 
 /** Update a stage's name / colour / order */
-router.put('/categories/:categoryId/stages/:stageId', categoryController.updateStage.bind(categoryController));
+router.put('/collections/:collectionId/stages/:stageId', collectionController.updateStage.bind(collectionController));
 
 /** Delete a stage (reassigns its leads to the first remaining stage) */
-router.delete('/categories/:categoryId/stages/:stageId', categoryController.deleteStage.bind(categoryController));
+router.delete('/collections/:collectionId/stages/:stageId', collectionController.deleteStage.bind(collectionController));
 
 // ── Lead CRUD ────────────────────────────────────────────────────────────────
 
@@ -46,11 +46,11 @@ router.get('/', leadController.getAllLeads.bind(leadController));
 /** Get a single lead by ID — must come after static routes */
 router.get('/:id', leadController.getLeadById.bind(leadController));
 
-/** Create lead(s) — no category (uses default) */
+/** Create lead(s) — no collection (uses default) */
 router.post('/', leadController.createLead.bind(leadController));
 
-/** Create lead(s) under a named category */
-router.post('/:category', leadController.createLead.bind(leadController));
+/** Create lead(s) under a named collection */
+router.post('/:collection', leadController.createLead.bind(leadController));
 
 /** Update a lead */
 router.put('/:id', leadController.updateLead.bind(leadController));

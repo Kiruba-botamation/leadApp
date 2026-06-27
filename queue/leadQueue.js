@@ -85,7 +85,7 @@ const WORKER_OPTIONS = {
  * Enqueue a lead insert/update job.
  * Called by the controller immediately after responding 202 to the API caller.
  *
- * @param {Object} jobData   - { acctId, leadPayload, category, mergeProperties }
+ * @param {Object} jobData   - { acctId, leadPayload, collection, mergeProperties }
  * @param {Object} [options] - Optional BullMQ job overrides (jobId, priority, delay …)
  * @returns {Promise<import('bullmq').Job>}
  */

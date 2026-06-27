@@ -1,5 +1,5 @@
 /**
- * One-time migration script: converts legacy LeadCategory.fields from
+ * One-time migration script: converts legacy LeadCollection.fields from
  * an array of strings to an array of column-definition objects.
  *
  * Run ONCE before deploying the new version:
@@ -23,7 +23,7 @@ async function migrate() {
     await mongoose.connect(MONGO_URI, { dbName: DB_NAME });
     console.log('[migrate] Connected to MongoDB');
 
-    const collection = mongoose.connection.collection('lead_categories');
+    const collection = mongoose.connection.collection('lead_collections');
     const cursor = collection.find({});
 
     let migrated = 0;
@@ -52,7 +52,7 @@ async function migrate() {
         });
 
         await collection.updateOne({ _id: doc._id }, { $set: { fields: converted } });
-        console.log(`[migrate] ✓ Migrated category "${doc.categoryName}" (${doc._id}) — ${converted.length} field(s)`);
+        console.log(`[migrate] ✓ Migrated collection "${doc.collectionName}" (${doc._id}) — ${converted.length} field(s)`);
         migrated++;
     }
 
