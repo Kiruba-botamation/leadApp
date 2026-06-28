@@ -6,7 +6,7 @@
  * ────────────────────────────────────────────────────────────────────────────
  */
 import { getAiProvider } from '../connectors/ai/index.js';
-import collectionService from '../services/collectionService.js';
+import collectionService, { STAGE_FIELD } from '../services/collectionService.js';
 
 class AiAnalyticsController {
     /**
@@ -56,10 +56,15 @@ class AiAnalyticsController {
                 collectionsWithFields = await Promise.all(
                     collectionList.map(async col => {
                         const detail = await collectionService.getCollectionFields(acctId, String(col._id));
+                        // Include system fields (e.g. "responsible") — they are valid chart axes
+                        // the AI should be able to choose. Also ensure "stage" is present, since
+                        // getCollectionFields does not include it in the stored field list.
+                        const fields = [...(detail.fields || [])];
+                        if (!fields.some(f => f.field === STAGE_FIELD.field)) fields.push(STAGE_FIELD);
                         return {
                             _id:            String(col._id),
                             collectionName: col.collectionName,
-                            fields:         (detail.fields || []).filter(f => !f.system),
+                            fields,
                         };
                     })
                 );

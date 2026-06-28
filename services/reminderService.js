@@ -15,9 +15,15 @@ import logger from '../utils/logger.js';
  * A reminder may be edited/deleted only while it is still PENDING (not yet fired
  * and scheduled in the future), and only by the lead's current responsible —
  * falling back to the creator when the lead is unassigned.
+ *
+ * Superadmins may manage ANY reminder within their own account, including ones on
+ * leads they aren't responsible for (the per-account scope is still enforced).
  */
-const canManageReminder = async (reminder, userId) => {
+const canManageReminder = async (reminder, userId, { isSuperadmin = false, acctId = null } = {}) => {
     if (!reminder) return false;
+    if (isSuperadmin) {
+        return !acctId || String(reminder.acctId) === String(acctId);
+    }
     const isPending = !reminder.mainSent && new Date(reminder.scheduledAt) > new Date();
     if (!isPending) return false;
     const lead = await Lead.findById(reminder.leadId, { responsible: 1 }).lean();
@@ -99,10 +105,11 @@ class ReminderService {
      * @param {object} updates
      * @returns {Promise<object|null>}
      */
-    async updateReminder(reminderId, userId, updates) {
-        // Only the current assignee may edit, and only while pending
+    async updateReminder(reminderId, userId, updates, { isSuperadmin = false, acctId = null } = {}) {
+        // Only the current assignee may edit (and only while pending); superadmins
+        // may edit any reminder within their account.
         const existing = await LeadReminder.findById(reminderId);
-        if (!(await canManageReminder(existing, userId))) return null;
+        if (!(await canManageReminder(existing, userId, { isSuperadmin, acctId }))) return null;
 
         // Cancel existing jobs before applying any changes
         await cancelReminderJobs(reminderId);
@@ -151,9 +158,9 @@ class ReminderService {
      * @param {string} userId
      * @returns {Promise<boolean>}
      */
-    async deleteReminder(reminderId, userId) {
+    async deleteReminder(reminderId, userId, { isSuperadmin = false, acctId = null } = {}) {
         const existing = await LeadReminder.findById(reminderId);
-        if (!(await canManageReminder(existing, userId))) return false;
+        if (!(await canManageReminder(existing, userId, { isSuperadmin, acctId }))) return false;
 
         await cancelReminderJobs(reminderId);
         await LeadReminder.deleteOne({ _id: reminderId });
@@ -172,7 +179,19 @@ class ReminderService {
         const skip = (page - 1) * limit;
         const filter = { notifiedUserId: userId, mainSent: true, bellDismissed: { $ne: true } };
         const [items, total, unread] = await Promise.all([
-            LeadReminder.find(filter).sort({ scheduledAt: -1 }).skip(skip).limit(limit).lean(),
+            // Enrich each item with the lead's collection name so the bell shows
+            // which collection the reminder is from. Paginate first, then join.
+            LeadReminder.aggregate([
+                { $match: filter },
+                { $sort: { scheduledAt: -1 } },
+                { $skip: skip },
+                { $limit: limit },
+                { $lookup: { from: 'leads', localField: 'leadId', foreignField: '_id', as: 'lead' } },
+                { $addFields: { lead: { $arrayElemAt: ['$lead', 0] } } },
+                { $lookup: { from: 'lead_collections', localField: 'lead.collectionId', foreignField: '_id', as: 'coll' } },
+                { $addFields: { collectionName: { $arrayElemAt: ['$coll.collectionName', 0] } } },
+                { $project: { lead: 0, coll: 0 } },
+            ]),
             LeadReminder.countDocuments(filter),
             LeadReminder.countDocuments({ ...filter, notificationRead: false }),
         ]);
@@ -195,6 +214,71 @@ class ReminderService {
 
         await LeadReminder.updateMany(filter, { notificationRead: true });
         logger.info(`[ReminderService] Marked reminders as read | userId=${userId}`);
+    }
+
+    /**
+     * Calendar view — reminders a user is currently responsible for, within a date
+     * range.
+     *
+     * A reminder belongs to the lead's CURRENT assignee (lead.responsible), so a
+     * reassigned reminder follows the lead to the new admin even if another admin
+     * created it. When the lead is unassigned, it falls back to the creator
+     * (userId) — mirroring how notifications are delivered and who may edit it.
+     *
+     * Each item is enriched with the lead's live Name / Phone / Email (falling back
+     * to the reminder's stored snapshot), so the calendar list can show lead context.
+     *
+     * @param {string} acctId
+     * @param {string} userId
+     * @param {Date}   start  inclusive
+     * @param {Date}   end    exclusive
+     * @returns {Promise<object[]>} reminders sorted by scheduledAt ascending
+     */
+    async getCalendarReminders(acctId, userId, start, end) {
+        return LeadReminder.aggregate([
+            { $match: { acctId, scheduledAt: { $gte: start, $lt: end } } },
+            { $lookup: { from: 'leads', localField: 'leadId', foreignField: '_id', as: 'lead' } },
+            { $addFields: { lead: { $arrayElemAt: ['$lead', 0] } } },
+            // Effective owner = lead's current responsible; creator only when unassigned
+            {
+                $addFields: {
+                    effectiveOwner: {
+                        $let: {
+                            vars: { resp: { $ifNull: ['$lead.responsible', null] } },
+                            in: {
+                                $cond: [
+                                    { $in: ['$$resp', [null, '', 'none', 'None']] },
+                                    '$userId',
+                                    '$$resp'
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            { $match: { effectiveOwner: userId } },
+            // Resolve the collection the lead belongs to
+            { $lookup: { from: 'lead_collections', localField: 'lead.collectionId', foreignField: '_id', as: 'coll' } },
+            {
+                $project: {
+                    _id: 1,
+                    leadId: 1,
+                    description: 1,
+                    scheduledAt: 1,
+                    mainSent: 1,
+                    notificationRead: 1,
+                    preReminderEnabled: 1,
+                    preReminderValue: 1,
+                    preReminderUnit: 1,
+                    channels: 1,
+                    name:  { $ifNull: ['$lead.name',  '$leadSnapshot.name'] },
+                    phone: { $ifNull: ['$lead.phone', '$leadSnapshot.phone'] },
+                    email: { $ifNull: ['$lead.email', '$clientEmail'] },
+                    collectionName: { $arrayElemAt: ['$coll.collectionName', 0] },
+                }
+            },
+            { $sort: { scheduledAt: 1 } }
+        ]);
     }
 }
 

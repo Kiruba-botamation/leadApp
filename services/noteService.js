@@ -90,36 +90,50 @@ class NoteService {
     }
 
     /**
-     * Update a note — only the creator may edit.
+     * Update a note. By default only the creator may edit; superadmins may edit
+     * any note within their own account.
      *
      * @param {string} noteId
-     * @param {string} userId   — must match the note's userId
+     * @param {string} userId   — the requesting user (matched unless superadmin)
      * @param {string} description
+     * @param {{ isSuperadmin?: boolean, acctId?: string|null }} [opts]
      * @returns {Promise<object|null>}
      */
-    async updateNote(noteId, userId, description) {
-        const updated = await LeadNote.findOneAndUpdate(
-            { _id: noteId, userId },
-            { description },
-            { new: true }
-        ).lean();
+    async updateNote(noteId, userId, description, { isSuperadmin = false, acctId = null } = {}) {
+        const filter = { _id: noteId };
+        if (isSuperadmin) {
+            if (acctId) filter.acctId = acctId; // a superadmin may edit any note in their account
+        } else {
+            filter.userId = userId;             // others may edit only their own note
+        }
+
+        const updated = await LeadNote.findOneAndUpdate(filter, { description }, { new: true }).lean();
 
         if (!updated) return null; // Not found or forbidden
-        logger.info(`[NoteService] Note updated | noteId=${noteId}`);
+        logger.info(`[NoteService] Note updated | noteId=${noteId} | by=${userId}${isSuperadmin ? ' (superadmin)' : ''}`);
         return updated;
     }
 
     /**
-     * Delete a note — only the creator may delete.
+     * Delete a note. By default only the creator may delete; superadmins may delete
+     * any note within their own account.
      *
      * @param {string} noteId
-     * @param {string} userId   — must match the note's userId
+     * @param {string} userId   — the requesting user (matched unless superadmin)
+     * @param {{ isSuperadmin?: boolean, acctId?: string|null }} [opts]
      * @returns {Promise<boolean>} true if deleted, false if not found/forbidden
      */
-    async deleteNote(noteId, userId) {
-        const result = await LeadNote.findOneAndDelete({ _id: noteId, userId });
+    async deleteNote(noteId, userId, { isSuperadmin = false, acctId = null } = {}) {
+        const filter = { _id: noteId };
+        if (isSuperadmin) {
+            if (acctId) filter.acctId = acctId;
+        } else {
+            filter.userId = userId;
+        }
+
+        const result = await LeadNote.findOneAndDelete(filter);
         if (!result) return false;
-        logger.info(`[NoteService] Note deleted | noteId=${noteId}`);
+        logger.info(`[NoteService] Note deleted | noteId=${noteId} | by=${userId}${isSuperadmin ? ' (superadmin)' : ''}`);
         return true;
     }
 }

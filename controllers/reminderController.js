@@ -135,6 +135,8 @@ class ReminderController {
             const { reminderId } = req.params;
             const updates = req.body;
             const userId = req.user?.userId;
+            const acctId = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const isSuperadmin = req.user?.accessLevel === 'superadmin';
 
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
@@ -166,7 +168,7 @@ class ReminderController {
                 updates.clientChannels = updates.clientChannels.filter(c => VALID_CLIENT_CHANNELS.includes(c));
             }
 
-            const updated = await reminderService.updateReminder(reminderId, userId, updates);
+            const updated = await reminderService.updateReminder(reminderId, userId, updates, { isSuperadmin, acctId });
             if (!updated) {
                 return res.status(404).json({ success: false, message: 'Reminder not found or you do not have permission to edit it' });
             }
@@ -186,10 +188,12 @@ class ReminderController {
         try {
             const { reminderId } = req.params;
             const userId         = req.user?.userId;
+            const acctId         = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const isSuperadmin   = req.user?.accessLevel === 'superadmin';
 
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            const deleted = await reminderService.deleteReminder(reminderId, userId);
+            const deleted = await reminderService.deleteReminder(reminderId, userId, { isSuperadmin, acctId });
             if (!deleted) {
                 return res.status(404).json({ success: false, message: 'Reminder not found or you do not have permission to delete it' });
             }
@@ -225,6 +229,34 @@ class ReminderController {
             });
         } catch (err) {
             console.error('[ReminderController] getFiredReminders:', err);
+            return res.status(500).json({ success: false, message: err.message });
+        }
+    }
+
+    /**
+     * GET /api/ui/reminders/calendar?acctId=&start=&end=
+     * Calendar view — all reminders for the current user within [start, end).
+     * start/end are ISO date strings; end is exclusive.
+     */
+    async getCalendarReminders(req, res) {
+        try {
+            const acctId = req.query.acctId || req.headers['x-acctno'];
+            const userId = req.user?.userId;
+            const { start, end } = req.query;
+
+            if (!acctId || !userId) return res.status(400).json({ success: false, message: 'Account context required' });
+            if (!start || !end)     return res.status(400).json({ success: false, message: 'start and end are required' });
+
+            const startDate = new Date(start);
+            const endDate   = new Date(end);
+            if (isNaN(startDate) || isNaN(endDate)) {
+                return res.status(400).json({ success: false, message: 'start and end must be valid dates' });
+            }
+
+            const items = await reminderService.getCalendarReminders(acctId, userId, startDate, endDate);
+            return res.status(200).json({ success: true, data: items });
+        } catch (err) {
+            console.error('[ReminderController] getCalendarReminders:', err);
             return res.status(500).json({ success: false, message: err.message });
         }
     }

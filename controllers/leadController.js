@@ -207,6 +207,11 @@ class LeadController {
             }
             if (!callerAcctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
+            // Destructive: only super admins may delete a lead
+            if (req.user?.accessLevel !== 'superadmin') {
+                return res.status(403).json({ success: false, message: 'Only super admins can delete a lead' });
+            }
+
             const existing = await leadService.getLeadById(id);
             if (!existing) return res.status(404).json({ success: false, message: 'Lead not found' });
             if (String(existing.acctId) !== String(callerAcctId)) {

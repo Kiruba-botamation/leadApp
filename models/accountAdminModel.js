@@ -3,15 +3,18 @@ import mongoose from 'mongoose';
 /**
  * Account Admins — `account_admins` collection
  *
- * An admin IS a lead-app user who has linked this account. A record is created
- * only when a user links the account (matched to a Botamation admin by email),
- * and removed only on unlink or when the chatbotAdminId disappears from Botamation
- * on sync. All downstream references (lead `responsible`, notes, reminders,
- * analytics) key off `userId` — the lead-app user id from SSO.
+ * An admin record is keyed by `chatbotAdminId` — the external Botamation admin id.
+ * Records are created ONLY when a user links the account (matched to a Botamation
+ * admin by email); the record always carries a `userId` (lead-app user id from SSO).
+ * On link, if a record for the same `chatbotAdminId` already exists, its `email` and
+ * `userId` are updated in place (and that admin's leads are reassigned if the userId
+ * changes). Platform sync never creates admins — it only removes records whose
+ * `chatbotAdminId` no longer exists in Botamation (unassigning their leads).
+ * All downstream references (lead `responsible`, notes, reminders, analytics) key
+ * off `userId`.
  *
- * Name & profile image are mirrored from the Botamation admin and refreshed on
- * sync. Email/phone are intentionally NOT stored here — they live on the user
- * profile (auth service) and are read from there when needed.
+ * Global uniqueness: `userId`, `email`, and `chatbotAdminId` are each unique across
+ * the ENTIRE collection — no value may appear in two documents (see indexes below).
  */
 const accountAdminSchema = new mongoose.Schema(
     {
@@ -69,14 +72,24 @@ const accountAdminSchema = new mongoose.Schema(
     { timestamps: true, collection: 'account_admins' }
 );
 
-// One admin record per user per account — also serves visibility/enrichment lookups by (acctId, userId)
-accountAdminSchema.index({ acctId: 1, userId: 1 }, { unique: true });
+// Global uniqueness — a given userId / email / chatbotAdminId may appear in at
+// most ONE document across the entire collection. No value may be shared by two
+// documents in any combination. (This also implies one admin record per user.)
+//
+// The userId index doubles as the lead-enrichment lookup
+// ($lookup leads.responsible → account_admins.userId).
+accountAdminSchema.index({ userId: 1 }, { unique: true });
 
-// Sync match — find the admin record to refresh/remove by external id
-accountAdminSchema.index({ acctId: 1, chatbotAdminId: 1 });
-
-// Lead enrichment ($lookup leads.responsible → account_admins.userId) and cross-account user lookups
-accountAdminSchema.index({ userId: 1 });
+// email / chatbotAdminId are optional — partial so missing (null) values are
+// exempt from the constraint (only real string values must be unique).
+accountAdminSchema.index(
+    { email: 1 },
+    { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+);
+accountAdminSchema.index(
+    { chatbotAdminId: 1 },
+    { unique: true, partialFilterExpression: { chatbotAdminId: { $type: 'string' } } }
+);
 
 const AccountAdmin = mongoose.model('AccountAdmin', accountAdminSchema);
 

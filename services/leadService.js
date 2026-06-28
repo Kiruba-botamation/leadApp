@@ -370,6 +370,70 @@ class LeadService {
         return true;
     }
 
+    /**
+     * Unassign every lead currently assigned to an admin (responsible === userId)
+     * within an account. Used when an admin is removed from the account so their
+     * leads don't keep pointing at a non-existent admin.
+     *
+     * Clears responsible and its name/image snapshots, and emits a lead.unassigned
+     * event per affected lead so webhooks stay consistent.
+     *
+     * @param {string} acctId
+     * @param {string} userId  — the removed admin's lead-app user id
+     * @returns {Promise<number>} number of leads unassigned
+     */
+    async unassignAdminLeads(acctId, userId) {
+        if (!acctId || !userId) return 0;
+
+        const affected = await Lead.find({ acctId, responsible: userId }, { _id: 1 }).lean();
+        if (affected.length === 0) return 0;
+
+        await Lead.updateMany(
+            { acctId, responsible: userId },
+            { $unset: { responsible: '', responsibleName: '', responsibleProfileImage: '' } }
+        );
+
+        for (const lead of affected) {
+            emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, data: { leadId: lead._id, previous: userId, lead: null } });
+        }
+
+        return affected.length;
+    }
+
+    /**
+     * Reassign every lead from one admin to another within an account
+     * (responsible: fromUserId → toUserId). Used when an account link maps an
+     * existing Botamation admin (chatbotAdminId) onto a different lead-app user —
+     * the leads must follow the admin to the new user id.
+     *
+     * Refreshes the responsible name/image snapshots to the new admin, and emits a
+     * lead.assigned event per affected lead.
+     *
+     * @param {string} acctId
+     * @param {string} fromUserId
+     * @param {string} toUserId
+     * @param {{name?: string|null, profileImage?: string|null}} snapshot — new admin's display fields
+     * @returns {Promise<number>} number of leads reassigned
+     */
+    async reassignAdminLeads(acctId, fromUserId, toUserId, snapshot = {}) {
+        if (!acctId || !fromUserId || !toUserId || String(fromUserId) === String(toUserId)) return 0;
+
+        const affected = await Lead.find({ acctId, responsible: fromUserId }, { _id: 1 }).lean();
+        if (affected.length === 0) return 0;
+
+        const set = { responsible: toUserId };
+        if (snapshot.name !== undefined) set.responsibleName = snapshot.name;
+        if (snapshot.profileImage !== undefined) set.responsibleProfileImage = snapshot.profileImage;
+
+        await Lead.updateMany({ acctId, responsible: fromUserId }, { $set: set });
+
+        for (const lead of affected) {
+            emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, data: { leadId: lead._id, responsible: toUserId, previous: fromUserId, lead: null } });
+        }
+
+        return affected.length;
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
 
     /**

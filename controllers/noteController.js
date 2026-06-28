@@ -62,6 +62,8 @@ class NoteController {
         try {
             const { noteId }    = req.params;
             const userId        = req.user?.userId;
+            const acctId        = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const isSuperadmin  = req.user?.accessLevel === 'superadmin';
             const { description } = req.body;
 
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
@@ -69,7 +71,7 @@ class NoteController {
                 return res.status(400).json({ success: false, message: 'description is required' });
             }
 
-            const updated = await noteService.updateNote(noteId, userId, description.trim());
+            const updated = await noteService.updateNote(noteId, userId, description.trim(), { isSuperadmin, acctId });
             if (!updated) {
                 return res.status(404).json({ success: false, message: 'Note not found or you do not have permission to edit it' });
             }
@@ -89,10 +91,12 @@ class NoteController {
         try {
             const { noteId } = req.params;
             const userId     = req.user?.userId;
+            const acctId     = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const isSuperadmin = req.user?.accessLevel === 'superadmin';
 
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            const deleted = await noteService.deleteNote(noteId, userId);
+            const deleted = await noteService.deleteNote(noteId, userId, { isSuperadmin, acctId });
             if (!deleted) {
                 return res.status(404).json({ success: false, message: 'Note not found or you do not have permission to delete it' });
             }

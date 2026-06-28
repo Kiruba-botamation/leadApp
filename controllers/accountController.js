@@ -1,5 +1,6 @@
 import { verifyAccountServices, getAdminsService } from '../services/accountService.js';
 import { normaliseBotamationAdmin } from '../services/adminService.js';
+import leadService from '../services/leadService.js';
 import acctDataModel from '../models/accountModel.js';
 import accountApiKeyModel from '../models/accountApiKeyModel.js';
 import UserAccount from '../models/userAccountModel.js';
@@ -104,14 +105,43 @@ export const verifyAccount = async (req, res) => {
                             });
                         }
 
-                        // Create/refresh the single admin record for the linking user.
-                        // Default access level is superadmin; email/phone are not stored.
+                        // Reconcile the admin record for the linking user, keyed by
+                        // chatbotAdminId:
+                        //   - existing record for this chatbotAdminId → update email + userId
+                        //     in place (preserving accessLevel). If the userId changed, move
+                        //     that admin's leads to the new userId.
+                        //   - no existing record → create a new one (default superadmin).
                         if (userId && acctId) {
                             const n = normaliseBotamationAdmin(matchedAdmin);
-                            await performUpsert(
-                                AccountAdmin,
-                                { acctId, userId },
-                                {
+                            const resolvedEmail = email || req.user?.email || null;
+
+                            const existingAdmin = n.chatbotAdminId
+                                ? await AccountAdmin.findOne({ acctId, chatbotAdminId: n.chatbotAdminId })
+                                : await AccountAdmin.findOne({ acctId, userId });
+
+                            if (existingAdmin) {
+                                const previousUserId = existingAdmin.userId;
+                                existingAdmin.userId = userId;
+                                existingAdmin.email = resolvedEmail ?? existingAdmin.email ?? null;
+                                if (phone) existingAdmin.phone = phone;
+                                existingAdmin.firstName = n.firstName;
+                                existingAdmin.lastName = n.lastName;
+                                existingAdmin.profileImage = n.profileImage;
+                                if (n.chatbotAdminId) existingAdmin.chatbotAdminId = n.chatbotAdminId;
+                                await existingAdmin.save();
+
+                                // Leads follow the admin to the new user id when it changes
+                                if (previousUserId && String(previousUserId) !== String(userId)) {
+                                    const newName = [n.firstName, n.lastName].filter(Boolean).join(' ') || null;
+                                    await leadService.reassignAdminLeads(acctId, previousUserId, userId, {
+                                        name: newName,
+                                        profileImage: n.profileImage || null
+                                    });
+                                    invalidateAdminCache(previousUserId, acctId);
+                                }
+                                logger.info('Admin record updated for linking user', { acctId, userId, operation: 'updateAccountAdmin' });
+                            } else {
+                                await AccountAdmin.create({
                                     userId,
                                     acctId,
                                     chatbotAdminId: n.chatbotAdminId,
@@ -119,13 +149,13 @@ export const verifyAccount = async (req, res) => {
                                     lastName: n.lastName,
                                     profileImage: n.profileImage,
                                     // Contact details come from the user's profile, not Botamation
-                                    email: email || req.user?.email || null,
+                                    email: resolvedEmail,
                                     phone: phone || null,
                                     accessLevel: 'superadmin'
-                                }
-                            );
+                                });
+                                logger.info('Admin record created for linking user', { acctId, userId, operation: 'createAccountAdmin' });
+                            }
                             invalidateAdminCache(userId, acctId);
-                            logger.info('Admin record created for linking user', { acctId, userId, operation: 'createAccountAdmin' });
                         }
                     } catch (adminError) {
                         console.error('verifyAccount: Error verifying account admin:', adminError);

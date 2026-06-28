@@ -1,23 +1,39 @@
-import { getAdminsFromDb as getAdminsFromDbService, syncAdminsFromPlatform, setAdminAccessLevel, setAdminContact } from '../services/adminService.js';
+import { getAdminsFromDb as getAdminsFromDbService, syncAdminsFromPlatform, setAdminAccessLevel, setAdminContact, setAdminProfile, getAdminByUser } from '../services/adminService.js';
 import { invalidateAdminCache } from '../middleware/ssoAuthMiddleware.js';
 import Role from '../models/roleModel.js';
 import logger from '../utils/logger.js';
 
 /**
- * GET /api/ui/admins/list?acctId=<acctId>
+ * Non-superadmins may only see and act on their own admin record. Returns extra
+ * query filters that scope a listing to the requesting user when they aren't a
+ * superadmin (an empty object for superadmins, who see everyone).
+ */
+const ownScopeFilters = (req) =>
+    req.user?.accessLevel === 'superadmin' ? {} : { userId: req.user?.userId ?? '__none__' };
+
+/**
+ * GET /api/ui/admins/list?acctId=<acctId>[&roster=1]
  * Return admins for an account from the local database.
  * Includes the requesting user's own access level so the UI can gate edit actions.
+ *
+ * By default non-superadmins are scoped to their own record (admin-management view).
+ * Pass `roster=1` to get the full account roster regardless of access level — used by
+ * the lead "assign to" dropdown, where any admin must be able to pick another admin.
  * @access  Protected (SSO)
  */
 export const getAdminsFromDb = async (req, res) => {
     try {
-        const { acctId, ...filters } = req.query;
+        const { acctId, roster, ...filters } = req.query;
 
         if (!acctId) {
             return res.status(400).json({ success: false, message: 'acctId query parameter is required' });
         }
 
-        const result = await getAdminsFromDbService(acctId, filters);
+        // Roster mode returns every admin (for assignment); otherwise non-superadmins
+        // only ever see their own admin record.
+        const isRoster = roster === '1' || roster === 'true';
+        const scope = isRoster ? {} : ownScopeFilters(req);
+        const result = await getAdminsFromDbService(acctId, { ...filters, ...scope });
 
         return res.status(200).json({
             success: true,
@@ -45,8 +61,12 @@ export const getAdmins = async (req, res) => {
             return res.status(400).json({ success: false, message: 'acctId query parameter is required' });
         }
 
-        await syncAdminsFromPlatform(acctId);
-        const result = await getAdminsFromDbService(acctId, filters);
+        // Platform sync adds/removes admins — a destructive operation restricted to
+        // superadmins. Non-superadmins just get their own (un-synced) record back.
+        if (req.user?.accessLevel === 'superadmin') {
+            await syncAdminsFromPlatform(acctId);
+        }
+        const result = await getAdminsFromDbService(acctId, { ...filters, ...ownScopeFilters(req) });
 
         return res.status(200).json({
             success: true,
@@ -123,5 +143,45 @@ export const updateAccessLevel = async (req, res) => {
     } catch (error) {
         logger.error('Failed to update access level', { error: error.message });
         return res.status(500).json({ success: false, message: error.message || 'Failed to update access level' });
+    }
+};
+
+/**
+ * PATCH /api/ui/admins/profile
+ * Update an admin's profile fields (firstName, lastName, email, phone, profileImage),
+ * identified by chatbotAdminId within an account. Access level is NOT editable here.
+ * Used by the edit form and the "sync from auth app" action.
+ *
+ * Permissions: superadmins may edit any admin in the account; non-superadmins may
+ * edit ONLY their own record.
+ * @access  Protected (SSO)
+ * @body    { acctId, chatbotAdminId, firstName?, lastName?, email?, phone?, profileImage? }
+ */
+export const updateProfile = async (req, res) => {
+    try {
+        const { acctId, chatbotAdminId, firstName, lastName, email, phone, profileImage } = req.body;
+
+        if (!acctId || !chatbotAdminId) {
+            return res.status(400).json({ success: false, message: 'acctId and chatbotAdminId are required' });
+        }
+
+        // Non-superadmins may only edit their own admin record
+        if (req.user?.accessLevel !== 'superadmin') {
+            const own = await getAdminByUser(acctId, req.user?.userId);
+            if (!own || String(own.chatbotAdminId) !== String(chatbotAdminId)) {
+                return res.status(403).json({ success: false, message: 'You can only edit your own admin profile' });
+            }
+        }
+
+        const updated = await setAdminProfile(acctId, chatbotAdminId, { firstName, lastName, email, phone, profileImage });
+        if (!updated) {
+            return res.status(404).json({ success: false, message: 'Admin not found for this account' });
+        }
+
+        logger.info('Admin profile updated', { acctId, chatbotAdminId, operation: 'updateAdminProfile' });
+        return res.status(200).json({ success: true, admin: updated });
+    } catch (error) {
+        logger.error('Failed to update admin profile', { error: error.message });
+        return res.status(500).json({ success: false, message: error.message || 'Failed to update admin profile' });
     }
 };

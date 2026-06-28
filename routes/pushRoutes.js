@@ -10,6 +10,9 @@ const router = express.Router();
 /** Get fired-but-unread reminders for the notification bell */
 router.get('/fired', reminderController.getFiredReminders.bind(reminderController));
 
+/** Calendar view — all reminders for the current user within a date range */
+router.get('/calendar', reminderController.getCalendarReminders.bind(reminderController));
+
 /** Mark reminders as read */
 router.post('/mark-read', reminderController.markRead.bind(reminderController));
 

@@ -2,6 +2,8 @@ import { getAdminsService } from './accountService.js';
 import acctDataModel from '../models/accountModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
 import UserAccount from '../models/userAccountModel.js';
+import leadService from './leadService.js';
+import { invalidateAdminCache } from '../middleware/ssoAuthMiddleware.js';
 import { performGet, performCount, perfomDataExistanceCheck } from '../config/mongoConnector.js';
 import logger from '../utils/logger.js';
 
@@ -24,19 +26,21 @@ export const normaliseBotamationAdmin = (a) => ({
     chatbotAdminId: a.adminId ?? a.id ?? a._id ?? null,
     firstName: a.firstName ?? a.first_name ?? null,
     lastName: a.lastName ?? a.last_name ?? null,
+    phone: a.phone ?? a.phoneNumber ?? a.mobile ?? a.contact ?? null,
     profileImage: a.profile_pic ?? a.profileImage ?? a.profile_image ?? a.profileImageUrl
         ?? a.picture ?? a.photo ?? a.avatar ?? a.image ?? a.thumbnail
         ?? a.profile_photo ?? a.dp ?? null
 });
 
 /**
- * Sync existing admins for an account against the Botamation platform.
+ * Sync admins for an account against the Botamation platform — matched by
+ * chatbotAdminId. Sync NEVER adds or updates admins (admins are added/updated only
+ * when a user links the account). It only prunes admins that no longer exist in
+ * Botamation:
  *
- * Admin records are NEVER created here — they are created only when a user links
- * the account. This sync only:
- *   - refreshes firstName/lastName/profileImage for admins still present in Botamation, and
- *   - removes admins whose chatbotAdminId no longer exists in Botamation (deleting both the
- *     account_admins record and its user_account_rel link).
+ *   - chatbotAdminId in BOTH Botamation and the app    → NO UPDATE (left untouched).
+ *   - chatbotAdminId in the app but NOT in Botamation  → REMOVE the admin record,
+ *     unlink the user, and unassign any leads still assigned to them.
  */
 export const syncAdminsFromPlatform = async (acctId) => {
     // acctNo is required to call the Botamation platform API (page_id param)
@@ -45,49 +49,45 @@ export const syncAdminsFromPlatform = async (acctId) => {
     const admins = await getAdminsService(acctNo);
     const adminList = Array.isArray(admins) ? admins : [admins];
 
-    // Map external admins by chatbotAdminId for O(1) match/refresh
-    const externalById = new Map();
+    // Set of external admin ids (chatbotAdminId) currently in Botamation
+    const externalIds = new Set();
     for (const a of adminList) {
         const n = normaliseBotamationAdmin(a);
-        if (n.chatbotAdminId) externalById.set(String(n.chatbotAdminId), n);
+        if (n.chatbotAdminId) externalIds.add(String(n.chatbotAdminId));
     }
 
     const existing = await AccountAdmin.find({ acctId }).lean();
 
-    let updated = 0;
     let removed = 0;
 
+    // REMOVE — present in the app, gone from Botamation
     await Promise.all(existing.map(async (admin) => {
-        const match = admin.chatbotAdminId ? externalById.get(String(admin.chatbotAdminId)) : null;
+        const id = admin.chatbotAdminId ? String(admin.chatbotAdminId) : null;
+        if (id && externalIds.has(id)) return; // present in both → no update
 
-        if (match) {
-            // Refresh mirrored profile fields only — never touches userId or accessLevel
-            await AccountAdmin.updateOne(
-                { _id: admin._id },
-                { $set: { firstName: match.firstName, lastName: match.lastName, profileImage: match.profileImage } }
-            );
-            updated += 1;
-        } else {
-            // Admin gone from Botamation — remove the admin record and unlink the user
-            await AccountAdmin.deleteOne({ _id: admin._id });
-            if (admin.userId) {
-                await UserAccount.deleteOne({ acctId, userId: admin.userId });
-            }
-            removed += 1;
+        await AccountAdmin.deleteOne({ _id: admin._id });
+        if (admin.userId) {
+            await UserAccount.deleteOne({ acctId, userId: admin.userId });
+            // Removed admins leave no dangling lead assignments
+            await leadService.unassignAdminLeads(acctId, admin.userId);
+            invalidateAdminCache(admin.userId, acctId);
         }
+        removed += 1;
     }));
 
-    logger.info('Admins synced to database', { acctId, updated, removed });
+    logger.info('Admins synced to database', { acctId, removed });
 
-    return { updated, removed };
+    return { removed };
 };
 
 /**
  * Fetch admins for an account from the local DB with optional filtering and pagination.
  */
-export const getAdminsFromDb = async (acctId, { page, limit, sortBy, sortOrder, firstName, lastName, email, phone, accessLevel, chatbotAdminId } = {}) => {
+export const getAdminsFromDb = async (acctId, { page, limit, sortBy, sortOrder, userId, firstName, lastName, email, phone, accessLevel, chatbotAdminId } = {}) => {
     const query = { acctId };
 
+    // Exact-match scoping (used to restrict non-superadmins to their own record)
+    if (userId) query.userId = userId;
     if (firstName) query.firstName = { $regex: firstName, $options: 'i' };
     if (lastName) query.lastName = { $regex: lastName, $options: 'i' };
     if (email) query.email = { $regex: email, $options: 'i' };
@@ -144,4 +144,27 @@ export const setAdminAccessLevel = async (acctId, chatbotAdminId, accessLevel) =
         { new: true }
     ).lean();
     return updated;
+};
+
+/** Fetch a single admin record for {acctId, userId}, or null. */
+export const getAdminByUser = async (acctId, userId) => {
+    if (!acctId || !userId) return null;
+    return AccountAdmin.findOne({ acctId, userId }).lean();
+};
+
+/**
+ * Update an admin's editable profile fields (firstName, lastName, email, phone,
+ * profileImage), identified by chatbotAdminId within an account. Access level is
+ * intentionally NOT updatable here — that goes through setAdminAccessLevel.
+ * Used both by the edit form and by the "sync from auth app" action.
+ * Returns the updated record, or null if not found / nothing to update.
+ */
+export const setAdminProfile = async (acctId, chatbotAdminId, fields = {}) => {
+    const allowed = ['firstName', 'lastName', 'email', 'phone', 'profileImage'];
+    const set = {};
+    for (const key of allowed) {
+        if (fields[key] !== undefined) set[key] = fields[key];
+    }
+    if (Object.keys(set).length === 0) return null;
+    return AccountAdmin.findOneAndUpdate({ acctId, chatbotAdminId }, { $set: set }, { new: true }).lean();
 };

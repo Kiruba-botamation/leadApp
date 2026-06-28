@@ -181,9 +181,12 @@ export const responseJsonSchema = {
  * @returns {string} Full system instruction text
  */
 export function buildSystemPrompt(collectionsWithFields, currentCharts = [], today = new Date().toISOString().split('T')[0]) {
+    // Fields may be plain strings or field objects ({ field, label, ... }); render the
+    // field key so the AI uses it as the xAxis/yAxis "value".
+    const fieldKey = (f) => (typeof f === 'string' ? f : (f?.field ?? f?.value ?? ''));
     const collectionsBlock = collectionsWithFields.length > 0
         ? collectionsWithFields.map(c =>
-            `  - Collection: "${c.collectionName}" (id: ${c._id})\n    Fields: ${c.fields.join(', ')}`
+            `  - Collection: "${c.collectionName}" (id: ${c._id})\n    Fields: ${(c.fields || []).map(fieldKey).filter(Boolean).join(', ')}`
         ).join('\n')
         : '  - No collections available yet';
 
@@ -211,9 +214,11 @@ AVAILABLE COLLECTIONS AND FIELDS
 ════════════════════════════════════════════════════════
 ${collectionsBlock}
 
-Special system fields available in ALL collections:
-  - createdAt  (timestamp — when the lead was created)
-  - updatedAt  (timestamp — when the lead was last updated)
+Special system fields available in ALL collections (use these exact field keys as xAxis/yAxis "value"):
+  - createdAt    (timestamp — when the lead was created)
+  - updatedAt    (timestamp — when the lead was last updated)
+  - responsible  (the admin/user the lead is assigned to; label "Responsible")
+  - stage        (the lead's pipeline stage; label "Stage")
 
 ════════════════════════════════════════════════════════
 CURRENT CHARTS ON THE DASHBOARD

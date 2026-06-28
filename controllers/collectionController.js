@@ -196,6 +196,11 @@ class CollectionController {
             const acctId = this._resolveAcctId(req);
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
+            // Destructive: only super admins may delete a collection (and its leads)
+            if (req.user?.accessLevel !== 'superadmin') {
+                return res.status(403).json({ success: false, message: 'Only super admins can delete a collection' });
+            }
+
             const { collectionId } = req.params;
             const result = await collectionService.deleteCollection(acctId, collectionId);
             return res.status(200).json({
