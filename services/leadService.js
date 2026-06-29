@@ -135,7 +135,7 @@ class LeadService {
             const stage = (lead.stage !== undefined && lead.stage !== null)
                 ? { id: lead.stage, name: stageNameById.get(lead.stage) ?? null }
                 : null;
-            emitEvent(EVENTS.LEAD_CREATED, { acctId, data: { leadId: lead._id, lead, stage } });
+            emitEvent(EVENTS.LEAD_CREATED, { acctId, collectionId: lead.collectionId ?? collectionId, data: { leadId: lead._id, lead, stage } });
         }
 
         return { lead: leadResult, collectionId };
@@ -338,12 +338,15 @@ class LeadService {
             doc = result.doc || null;
         }
 
+        // Collection the lead belongs to — webhooks are scoped per collection.
+        const evtCollectionId = collectionId || doc?.collectionId || null;
+
         // Emit assignment transition events for webhooks
         if (hasResponsible && String(prevResponsible || '') !== String(nextResponsible || '')) {
             if (nextResponsible) {
-                emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, data: { leadId: id, responsible: nextResponsible, previous: prevResponsible, lead: doc } });
+                emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, collectionId: evtCollectionId, data: { leadId: id, responsible: nextResponsible, previous: prevResponsible, lead: doc } });
             } else {
-                emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, data: { leadId: id, previous: prevResponsible, lead: doc } });
+                emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, collectionId: evtCollectionId, data: { leadId: id, previous: prevResponsible, lead: doc } });
             }
         }
 
@@ -352,6 +355,7 @@ class LeadService {
             const stageMap = collectionId ? await collectionService.resolveStageMap(acctId, collectionId) : {};
             emitEvent(EVENTS.LEAD_STAGE_CHANGED, {
                 acctId,
+                collectionId: evtCollectionId,
                 data: {
                     leadId:   id,
                     previous: prevStageNum === null ? null : { id: prevStageNum, name: stageMap[prevStageNum] ?? null },
@@ -385,7 +389,7 @@ class LeadService {
     async unassignAdminLeads(acctId, userId) {
         if (!acctId || !userId) return 0;
 
-        const affected = await Lead.find({ acctId, responsible: userId }, { _id: 1 }).lean();
+        const affected = await Lead.find({ acctId, responsible: userId }, { _id: 1, collectionId: 1 }).lean();
         if (affected.length === 0) return 0;
 
         await Lead.updateMany(
@@ -394,7 +398,7 @@ class LeadService {
         );
 
         for (const lead of affected) {
-            emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, data: { leadId: lead._id, previous: userId, lead: null } });
+            emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, collectionId: lead.collectionId ?? null, data: { leadId: lead._id, previous: userId, lead: null } });
         }
 
         return affected.length;
@@ -418,7 +422,7 @@ class LeadService {
     async reassignAdminLeads(acctId, fromUserId, toUserId, snapshot = {}) {
         if (!acctId || !fromUserId || !toUserId || String(fromUserId) === String(toUserId)) return 0;
 
-        const affected = await Lead.find({ acctId, responsible: fromUserId }, { _id: 1 }).lean();
+        const affected = await Lead.find({ acctId, responsible: fromUserId }, { _id: 1, collectionId: 1 }).lean();
         if (affected.length === 0) return 0;
 
         const set = { responsible: toUserId };
@@ -428,7 +432,7 @@ class LeadService {
         await Lead.updateMany({ acctId, responsible: fromUserId }, { $set: set });
 
         for (const lead of affected) {
-            emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, data: { leadId: lead._id, responsible: toUserId, previous: fromUserId, lead: null } });
+            emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, collectionId: lead.collectionId ?? null, data: { leadId: lead._id, responsible: toUserId, previous: fromUserId, lead: null } });
         }
 
         return affected.length;

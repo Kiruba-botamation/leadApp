@@ -8,7 +8,8 @@ import { EventEmitter } from 'events';
  * webhook dispatcher subscribes here; emitters never block on delivery.
  *
  * Event names are namespaced strings, e.g. 'lead.created'. Payloads are plain
- * objects: { acctId, event, data }.
+ * objects: { acctId, collectionId, event, data }. `collectionId` scopes webhook
+ * delivery so only webhooks subscribed to that collection fire.
  */
 export const EVENTS = {
     LEAD_CREATED: 'lead.created',

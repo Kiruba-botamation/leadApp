@@ -20,6 +20,15 @@ const webhookConfigSchema = new mongoose.Schema(
             type: String,
             required: true
         },
+        /**
+         * Collection this webhook is scoped to. A webhook only fires for events on
+         * leads in this collection, and its payload variables are limited to this
+         * collection's fields. References `lead_collections._id`.
+         */
+        collectionId: {
+            type: String,
+            required: true
+        },
         /** Events this endpoint subscribes to */
         events: {
             type: [String],
@@ -37,6 +46,28 @@ const webhookConfigSchema = new mongoose.Schema(
             type: String,
             required: true
         },
+        /**
+         * Custom HTTP headers sent with every delivery (e.g. an Authorization
+         * token for the receiver). Stored as string→string. Reserved headers
+         * (Content-Type, the signature/event headers) are still set by the
+         * processor and take precedence so deliveries stay verifiable.
+         */
+        headers: {
+            type: Map,
+            of: String,
+            default: undefined
+        },
+        /**
+         * Optional custom JSON payload template. A JSON string that may contain
+         * `{{path}}` placeholders (e.g. `{{data.lead.name}}`, `{{data.stage.id}}`)
+         * resolved against the event context at delivery time. When empty/null the
+         * default full envelope `{ event, acctId, data, timestamp }` is sent, so
+         * existing webhooks are unaffected.
+         */
+        payloadTemplate: {
+            type: String,
+            default: null
+        },
         /** When false, no deliveries are enqueued */
         active: {
             type: Boolean,
@@ -46,8 +77,8 @@ const webhookConfigSchema = new mongoose.Schema(
     { timestamps: true, collection: 'webhook_configs' }
 );
 
-// List + match configs for an account when an event fires
-webhookConfigSchema.index({ acctId: 1 });
+// Match configs for an account + collection when an event fires
+webhookConfigSchema.index({ acctId: 1, collectionId: 1 });
 
 const WebhookConfig = mongoose.model('WebhookConfig', webhookConfigSchema);
 

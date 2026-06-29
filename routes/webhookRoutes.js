@@ -4,13 +4,17 @@ import {
     createWebhook,
     updateWebhook,
     deleteWebhook,
-    listDeliveries
+    listDeliveries,
+    listVariables
 } from '../controllers/webhookController.js';
 
 const router = express.Router();
 
 /** GET /deliveries — recent delivery log (declare before /:id routes) */
 router.get('/deliveries', listDeliveries);
+
+/** GET /variables — payload-template variable catalog (declare before /:id routes) */
+router.get('/variables', listVariables);
 
 /** GET / — list configs + available events */
 router.get('/', listWebhooks);

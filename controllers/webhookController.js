@@ -41,18 +41,21 @@ export const createWebhook = async (req, res) => {
     try {
         if (!requireSuperadmin(req, res)) return;
         const acctId = resolveAcctId(req);
-        const { url, events } = req.body;
+        const { url, events, collectionId, headers, payloadTemplate } = req.body;
 
         if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
+        if (!collectionId) return res.status(400).json({ success: false, message: 'collectionId is required' });
         if (!url || !/^https?:\/\//i.test(url)) {
             return res.status(400).json({ success: false, message: 'A valid http(s) url is required' });
         }
 
-        const config = await webhookService.createConfig(acctId, { url, events });
+        const config = await webhookService.createConfig(acctId, { url, events, collectionId, headers, payloadTemplate });
         return res.status(201).json({ success: true, config });
     } catch (err) {
         logger.error('[WebhookController] createWebhook:', { error: err.message });
-        return res.status(500).json({ success: false, message: err.message });
+        // Template / collection validation errors are client errors, not server faults
+        const status = /invalid json template|collection (not found|is required)/i.test(err.message) ? 400 : 500;
+        return res.status(status).json({ success: false, message: err.message });
     }
 };
 
@@ -69,6 +72,23 @@ export const updateWebhook = async (req, res) => {
         return res.status(200).json({ success: true, config });
     } catch (err) {
         logger.error('[WebhookController] updateWebhook:', { error: err.message });
+        const status = /invalid json template|collection (not found|is required)/i.test(err.message) ? 400 : 500;
+        return res.status(status).json({ success: false, message: err.message });
+    }
+};
+
+/** GET /api/ui/webhooks/variables?collectionId=… — variable catalog for the payload-template picker */
+export const listVariables = async (req, res) => {
+    try {
+        const acctId = resolveAcctId(req);
+        if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
+        const collectionId = req.query.collectionId;
+        if (!collectionId) return res.status(400).json({ success: false, message: 'collectionId is required' });
+
+        const catalog = await webhookService.listVariables(acctId, collectionId);
+        return res.status(200).json({ success: true, ...catalog });
+    } catch (err) {
+        logger.error('[WebhookController] listVariables:', { error: err.message });
         return res.status(500).json({ success: false, message: err.message });
     }
 };

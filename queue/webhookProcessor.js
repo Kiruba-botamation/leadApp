@@ -10,7 +10,19 @@ import crypto from 'crypto';
 import axios from 'axios';
 import WebhookConfig from '../models/webhookConfigModel.js';
 import WebhookDelivery from '../models/webhookDeliveryModel.js';
+import { buildContext, renderPayload } from '../services/webhookTemplate.js';
 import logger from '../utils/logger.js';
+
+/** Headers the processor always controls — custom headers cannot override these. */
+const RESERVED_HEADERS = new Set(['content-type', 'x-webhook-event', 'x-webhook-signature']);
+
+/** Normalize a config.headers value (Map under hydrated docs, object under lean()) to a plain object. */
+const headersToObject = (headers) => {
+    if (!headers) return {};
+    if (headers instanceof Map) return Object.fromEntries(headers);
+    if (typeof headers === 'object') return { ...headers };
+    return {};
+};
 
 export const processor = async (job) => {
     const { configId, acctId, event, data } = job.data;
@@ -21,9 +33,17 @@ export const processor = async (job) => {
         return;
     }
 
-    const bodyObj = { event, acctId, data, timestamp: new Date().toISOString() };
+    const timestamp = new Date().toISOString();
+    const context = buildContext({ event, acctId, data, timestamp });
+    const bodyObj = renderPayload(config.payloadTemplate, context);
     const body = JSON.stringify(bodyObj);
     const signature = crypto.createHmac('sha256', config.secret).update(body).digest('hex');
+
+    // Custom headers first, then reserved headers so signing/identification can't be clobbered.
+    const customHeaders = {};
+    for (const [key, value] of Object.entries(headersToObject(config.headers))) {
+        if (!RESERVED_HEADERS.has(String(key).toLowerCase())) customHeaders[key] = value;
+    }
 
     const maxAttempts = job.opts?.attempts || 1;
     const attemptNo = job.attemptsMade + 1;
@@ -32,6 +52,7 @@ export const processor = async (job) => {
     try {
         const res = await axios.post(config.url, body, {
             headers: {
+                ...customHeaders,
                 'Content-Type': 'application/json',
                 'X-Webhook-Event': event,
                 'X-Webhook-Signature': `sha256=${signature}`
