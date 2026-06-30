@@ -5,7 +5,8 @@
  * Auth is enforced by ssoAuthMiddleware (mounted in server.js).
  * The note author is the lead-app userId from the authenticated session (req.user.userId).
  */
-import noteService from '../services/noteService.js';
+import noteService     from '../services/noteService.js';
+import reminderService from '../services/reminderService.js';
 
 class NoteController {
     /**
@@ -127,6 +128,33 @@ class NoteController {
             return res.status(200).json({ success: true, data: counts });
         } catch (err) {
             console.error('[NoteController] getBatchCounts:', err);
+            return res.status(500).json({ success: false, message: err.message });
+        }
+    }
+
+    /**
+     * POST /api/ui/activity/batch-counts
+     * Combined notes + reminders counts in a single round-trip.
+     * Replaces the separate notes/batch-counts + reminders/batch-counts calls.
+     * Body: { leadIds: string[] }
+     */
+    async getCombinedBatchCounts(req, res) {
+        try {
+            const acctId     = req.query.acctId || req.headers['x-acctno'];
+            const { leadIds } = req.body;
+
+            if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
+            if (!Array.isArray(leadIds) || !leadIds.length) {
+                return res.status(400).json({ success: false, message: 'leadIds array is required' });
+            }
+
+            const [notes, reminders] = await Promise.all([
+                noteService.getBatchNoteCounts(acctId, leadIds),
+                reminderService.getBatchReminderCounts(acctId, leadIds),
+            ]);
+            return res.status(200).json({ success: true, data: { notes, reminders } });
+        } catch (err) {
+            console.error('[NoteController] getCombinedBatchCounts:', err);
             return res.status(500).json({ success: false, message: err.message });
         }
     }

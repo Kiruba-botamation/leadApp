@@ -155,6 +155,9 @@ leadReminderSchema.index({ notifiedUserId: 1, mainSent: 1, scheduledAt: -1 });
 // Per-lead panel view
 leadReminderSchema.index({ acctId: 1, leadId: 1, scheduledAt: 1 });
 
+// Batch count queries: pending reminders per lead (mainSent:false filter)
+leadReminderSchema.index({ acctId: 1, leadId: 1, mainSent: 1 });
+
 // Recovery cron — find reminders that were never enqueued
 leadReminderSchema.index({ mainSent: 1, jobScheduled: 1, scheduledAt: 1 });
 

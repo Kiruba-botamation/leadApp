@@ -28,4 +28,11 @@ router.post('/notes/batch-counts', noteController.getBatchCounts.bind(noteContro
  */
 router.post('/reminders/batch-counts', reminderController.getBatchReminderCounts.bind(reminderController));
 
+/**
+ * POST /api/ui/activity/batch-counts
+ * Combined notes + reminders counts in one round-trip (preferred over the two separate endpoints).
+ * Body: { leadIds: string[] }
+ */
+router.post('/batch-counts', noteController.getCombinedBatchCounts.bind(noteController));
+
 export default router;

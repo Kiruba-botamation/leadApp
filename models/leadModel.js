@@ -35,6 +35,12 @@ leadSchema.index({ acctId: 1, collectionId: 1, stage: 1, updatedAt: -1 });
 // Stage analytics / counts over time (e.g. "hot leads today")
 leadSchema.index({ acctId: 1, collectionId: 1, stage: 1, createdAt: -1 });
 
+// Per-admin kanban: collection + responsible scoped queries (non-superadmin kanban view)
+leadSchema.index({ acctId: 1, collectionId: 1, responsible: 1, updatedAt: -1 });
+
+// Kanban with both stage AND responsible filters (ESR pattern)
+leadSchema.index({ acctId: 1, collectionId: 1, stage: 1, responsible: 1, updatedAt: -1 });
+
 const Lead = mongoose.model('Lead', leadSchema);
 
 export default Lead;
