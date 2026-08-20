@@ -78,17 +78,17 @@ const accountAdminSchema = new mongoose.Schema(
 //
 // The userId index doubles as the lead-enrichment lookup
 // ($lookup leads.responsible → account_admins.userId).
-accountAdminSchema.index({ userId: 1 }, { unique: true });
+accountAdminSchema.index({ userId: 1 }, {});
 
 // email / chatbotAdminId are optional — partial so missing (null) values are
 // exempt from the constraint (only real string values must be unique).
 accountAdminSchema.index(
     { email: 1 },
-    { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+    { partialFilterExpression: { email: { $type: 'string' } } }
 );
 accountAdminSchema.index(
     { chatbotAdminId: 1 },
-    { unique: true, partialFilterExpression: { chatbotAdminId: { $type: 'string' } } }
+    { partialFilterExpression: { chatbotAdminId: { $type: 'string' } } }
 );
 
 const AccountAdmin = mongoose.model('AccountAdmin', accountAdminSchema);
