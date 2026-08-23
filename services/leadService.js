@@ -11,9 +11,6 @@ const UNASSIGNED_VALUES = new Set(['', 'none', 'None', null, undefined]);
 /** Fields that are internal / framework-managed and should never be treated as lead data */
 const INTERNAL_FIELDS = new Set(['_id', 'acctId', 'collectionId', '__v', 'createdAt', 'updatedAt', 'collection']);
 
-/** API-only assignee aliases. These are resolved to `responsible` and never stored. */
-const RESPONSIBLE_ALIAS_FIELDS = new Set(['chatbotResponsible', 'accountAdminId']);
-
 class LeadService {
     /**
      * Create one or more leads.
@@ -57,62 +54,47 @@ class LeadService {
         // ── 2. Validate each item in the payload ────────────────────────────
         const items = (Array.isArray(leadData) ? leadData : [leadData]).map(item => ({ ...item }));
 
-        // Resolve assignee aliases to the canonical lead-app userId. When more than
-        // one identifier is supplied, chatbotResponsible wins over accountAdminId,
-        // which wins over the existing responsible field.
+        // `responsible` accepts a chatbotAdminId, account-admin _id, or userId.
+        // Resolve all three forms to the canonical lead-app userId before storage.
         const identifierValue = value => value === undefined || value === null ? '' : String(value).trim();
         const hasIdentifier = value => identifierValue(value) !== '';
-        const chatbotIds = new Set();
-        const accountAdminIds = new Set();
+        const responsibleIds = new Set();
 
         for (const item of items) {
-            if (hasIdentifier(item.chatbotResponsible)) {
-                chatbotIds.add(identifierValue(item.chatbotResponsible));
-            } else if (hasIdentifier(item.accountAdminId)) {
-                accountAdminIds.add(identifierValue(item.accountAdminId));
-            }
+            if (hasIdentifier(item.responsible)) responsibleIds.add(identifierValue(item.responsible));
         }
 
-        const [chatbotAdmins, accountAdmins] = await Promise.all([
-            chatbotIds.size
-                ? AccountAdmin.find(
-                    { acctId, chatbotAdminId: { $in: [...chatbotIds] } },
-                    { chatbotAdminId: 1, userId: 1 }
-                ).lean()
-                : [],
-            accountAdminIds.size
-                ? AccountAdmin.find(
-                    { acctId, _id: { $in: [...accountAdminIds] } },
-                    { userId: 1 }
-                ).lean()
-                : []
-        ]);
+        const admins = responsibleIds.size
+            ? await AccountAdmin.find(
+                {
+                    acctId,
+                    $or: [
+                        { chatbotAdminId: { $in: [...responsibleIds] } },
+                        { _id: { $in: [...responsibleIds] } },
+                        { userId: { $in: [...responsibleIds] } }
+                    ]
+                },
+                { chatbotAdminId: 1, userId: 1 }
+            ).lean()
+            : [];
 
-        const userIdByChatbotId = new Map(chatbotAdmins.map(admin => [String(admin.chatbotAdminId), admin.userId]));
-        const userIdByAccountAdminId = new Map(accountAdmins.map(admin => [String(admin._id), admin.userId]));
+        const userIdByChatbotId = new Map(admins.map(admin => [String(admin.chatbotAdminId), admin.userId]));
+        const userIdByAccountAdminId = new Map(admins.map(admin => [String(admin._id), admin.userId]));
+        const userIdByUserId = new Map(admins.map(admin => [String(admin.userId), admin.userId]));
 
         for (const item of items) {
-            if (hasIdentifier(item.chatbotResponsible)) {
-                const id = identifierValue(item.chatbotResponsible);
-                const userId = userIdByChatbotId.get(id);
+            if (hasIdentifier(item.responsible)) {
+                const id = identifierValue(item.responsible);
+                const userId = userIdByChatbotId.get(id)
+                    ?? userIdByAccountAdminId.get(id)
+                    ?? userIdByUserId.get(id);
                 if (!userId) {
-                    const err = new Error(`No admin found for chatbotResponsible "${id}" in this account.`);
-                    err.statusCode = 400;
-                    throw err;
-                }
-                item.responsible = userId;
-            } else if (hasIdentifier(item.accountAdminId)) {
-                const id = identifierValue(item.accountAdminId);
-                const userId = userIdByAccountAdminId.get(id);
-                if (!userId) {
-                    const err = new Error(`No admin found for accountAdminId "${id}" in this account.`);
+                    const err = new Error(`No admin found for responsible identifier "${id}" in this account.`);
                     err.statusCode = 400;
                     throw err;
                 }
                 item.responsible = userId;
             }
-
-            for (const field of RESPONSIBLE_ALIAS_FIELDS) delete item[field];
         }
 
         for (const item of items) {
