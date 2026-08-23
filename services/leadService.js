@@ -1,5 +1,6 @@
 import Lead from '../models/leadModel.js';
 import LeadCollection from '../models/leadCollectionModel.js';
+import AccountAdmin from '../models/accountAdminModel.js';
 import { performUpsert, performGet, performDelete, perfomDataExistanceCheck } from '../config/mongoConnector.js';
 import collectionService, { SYSTEM_FIELDS, STAGE_FIELD } from './collectionService.js';
 import { emitEvent, EVENTS } from './eventBus.js';
@@ -9,6 +10,9 @@ const UNASSIGNED_VALUES = new Set(['', 'none', 'None', null, undefined]);
 
 /** Fields that are internal / framework-managed and should never be treated as lead data */
 const INTERNAL_FIELDS = new Set(['_id', 'acctId', 'collectionId', '__v', 'createdAt', 'updatedAt', 'collection']);
+
+/** API-only assignee aliases. These are resolved to `responsible` and never stored. */
+const RESPONSIBLE_ALIAS_FIELDS = new Set(['chatbotResponsible', 'accountAdminId']);
 
 class LeadService {
     /**
@@ -51,7 +55,66 @@ class LeadService {
         const hasStageValue = (v) => v !== undefined && v !== null && v !== '';
 
         // ── 2. Validate each item in the payload ────────────────────────────
-        const items = Array.isArray(leadData) ? leadData : [leadData];
+        const items = (Array.isArray(leadData) ? leadData : [leadData]).map(item => ({ ...item }));
+
+        // Resolve assignee aliases to the canonical lead-app userId. When more than
+        // one identifier is supplied, chatbotResponsible wins over accountAdminId,
+        // which wins over the existing responsible field.
+        const identifierValue = value => value === undefined || value === null ? '' : String(value).trim();
+        const hasIdentifier = value => identifierValue(value) !== '';
+        const chatbotIds = new Set();
+        const accountAdminIds = new Set();
+
+        for (const item of items) {
+            if (hasIdentifier(item.chatbotResponsible)) {
+                chatbotIds.add(identifierValue(item.chatbotResponsible));
+            } else if (hasIdentifier(item.accountAdminId)) {
+                accountAdminIds.add(identifierValue(item.accountAdminId));
+            }
+        }
+
+        const [chatbotAdmins, accountAdmins] = await Promise.all([
+            chatbotIds.size
+                ? AccountAdmin.find(
+                    { acctId, chatbotAdminId: { $in: [...chatbotIds] } },
+                    { chatbotAdminId: 1, userId: 1 }
+                ).lean()
+                : [],
+            accountAdminIds.size
+                ? AccountAdmin.find(
+                    { acctId, _id: { $in: [...accountAdminIds] } },
+                    { userId: 1 }
+                ).lean()
+                : []
+        ]);
+
+        const userIdByChatbotId = new Map(chatbotAdmins.map(admin => [String(admin.chatbotAdminId), admin.userId]));
+        const userIdByAccountAdminId = new Map(accountAdmins.map(admin => [String(admin._id), admin.userId]));
+
+        for (const item of items) {
+            if (hasIdentifier(item.chatbotResponsible)) {
+                const id = identifierValue(item.chatbotResponsible);
+                const userId = userIdByChatbotId.get(id);
+                if (!userId) {
+                    const err = new Error(`No admin found for chatbotResponsible "${id}" in this account.`);
+                    err.statusCode = 400;
+                    throw err;
+                }
+                item.responsible = userId;
+            } else if (hasIdentifier(item.accountAdminId)) {
+                const id = identifierValue(item.accountAdminId);
+                const userId = userIdByAccountAdminId.get(id);
+                if (!userId) {
+                    const err = new Error(`No admin found for accountAdminId "${id}" in this account.`);
+                    err.statusCode = 400;
+                    throw err;
+                }
+                item.responsible = userId;
+            }
+
+            for (const field of RESPONSIBLE_ALIAS_FIELDS) delete item[field];
+        }
+
         for (const item of items) {
             // Mandatory system fields: "name" and "phone"
             if (!item.name) {
@@ -109,21 +172,22 @@ class LeadService {
         let leadResult;
         if (Array.isArray(leadData)) {
             if (mergeProperties?.length) {
-                const ops = leadData.map(item => {
+                const ops = items.map(item => {
                     const enriched = addMeta({ ...item });
                     return { updateOne: { filter: buildMergeFilter(item), update: { $set: enriched }, upsert: true } };
                 });
                 await Lead.bulkWrite(ops, { ordered: false });
-                const mergeFilters = leadData.map(item => buildMergeFilter(item));
+                const mergeFilters = items.map(item => buildMergeFilter(item));
                 leadResult = await Lead.find({ $or: mergeFilters }).lean();
             } else {
                 const results = await Promise.all(
-                    leadData.map(item => performUpsert(Lead, {}, addMeta({ ...item })))
+                    items.map(item => performUpsert(Lead, {}, addMeta({ ...item })))
                 );
                 leadResult = results.map(r => r.doc);
             }
         } else {
-            const result = await performUpsert(Lead, buildMergeFilter(leadData), addMeta({ ...leadData }));
+            const item = items[0];
+            const result = await performUpsert(Lead, buildMergeFilter(item), addMeta(item));
             leadResult = result.doc;
         }
 
