@@ -26,6 +26,13 @@ leadSchema.index({ acctId: 1, updatedAt: -1 });
 leadSchema.index({ acctId: 1, createdAt: -1 });
 leadSchema.index({ acctId: 1, collectionId: 1, createdAt: -1 });
 
+// Cover the high-traffic KPI query: date-range match followed by responsible grouping.
+// Both account-wide and collection-scoped variants avoid fetching each matched lead.
+leadSchema.index({ acctId: 1, updatedAt: -1, responsible: 1 });
+leadSchema.index({ acctId: 1, createdAt: -1, responsible: 1 });
+leadSchema.index({ acctId: 1, collectionId: 1, updatedAt: -1, responsible: 1 });
+leadSchema.index({ acctId: 1, collectionId: 1, createdAt: -1, responsible: 1 });
+
 // Per-admin visibility: non-superadmins only see leads assigned to them (responsible = userId)
 leadSchema.index({ acctId: 1, responsible: 1, updatedAt: -1 });
 

@@ -101,6 +101,11 @@ export const geminiResponseSchema = {
                         type: 'string',
                         description: 'ISO date YYYY-MM-DD — only set when _datePreset is "custom"',
                     },
+                    dateFilterField: {
+                        type: 'string',
+                        enum: ['createdAt', 'updatedAt'],
+                        description: 'Timestamp field used to filter the chart date range',
+                    },
                     dateGranularity: {
                         type: 'string',
                         enum: ['hour', 'day', 'month', 'year'],
@@ -117,7 +122,7 @@ export const geminiResponseSchema = {
                     },
                     showLegend: { type: 'boolean' },
                     showDataLabels: { type: 'boolean' },
-                    numberSplitCount: { type: 'number' },
+                    numberSplitCount: { type: 'string', enum: ['auto'] },
                     chartCollection: {
                         type: 'object',
                         description: 'The collection this chart belongs to',
@@ -159,13 +164,14 @@ export const responseJsonSchema = {
                     _lastNDays: { type: 'number' },
                     dateFilterFrom: { type: 'string' },
                     dateFilterTo: { type: 'string' },
+                    dateFilterField: { type: 'string', enum: ['createdAt', 'updatedAt'] },
                     dateGranularity: { type: 'string' },
                     chartWidth: { type: 'string' },
                     chartHeight: { type: 'number' },
                     barOrientation: { type: 'string' },
                     showLegend: { type: 'boolean' },
                     showDataLabels: { type: 'boolean' },
-                    numberSplitCount: { type: 'number' },
+                    numberSplitCount: { anyOf: [{ type: 'number' }, { type: 'string', enum: ['auto'] }] },
                     chartCollection: { type: 'object' },
                 },
             },
@@ -198,7 +204,9 @@ export function buildSystemPrompt(collectionsWithFields, currentCharts = [], tod
             const agg = c.aggregation?.value || 'count';
             const type = c.chartType?.label || c.chartType?.value || 'unknown';
             const collection = c.chartCollection?.collectionName || 'unknown';
-            return `  - id:${c.id} | "${c.chartName}" | ${type} | collection: ${collection} | x: ${xLabel}, y: ${yLabel}, agg: ${agg} | date: ${preset}`;
+            const dateField = c.dateFilterField || (['createdAt', 'updatedAt'].includes(c.xAxis?.value) ? c.xAxis.value : 'updatedAt');
+            const split = c.numberSplitCount ?? 'auto';
+            return `  - id:${c.id} | "${c.chartName}" | ${type} | collection: ${collection} | x: ${xLabel}, y: ${yLabel}, agg: ${agg} | date: ${dateField}/${preset} | split: ${split}`;
         }).join('\n')
         : '  - No charts on the dashboard yet';
 
@@ -236,6 +244,8 @@ CRITICAL — EDITING EXISTING CHARTS:
     - xAxis / yAxis  → inherit unless user explicitly asks to change them
     - aggregation    → inherit unless user explicitly asks to change it
     - _datePreset    → inherit unless user mentions a different time range
+    - dateFilterField → inherit unless the user changes created-vs-updated intent
+    - numberSplitCount → inherit unless the user asks to change the Number breakdown
     - chartName      → keep the same name unless user explicitly renames it
   Never ask a follow-up question when editing if the answer can be taken from the existing chart.
 
@@ -280,6 +290,13 @@ DATE AXIS SPECIAL RULES:
   - "hourly breakdown" → dateGranularity: "hour"
   - Time-series charts (createdAt/updatedAt on xAxis) work best as line or bar charts
 
+DATE FILTER FIELD:
+  - dateFilterField independently selects which timestamp the date range filters.
+  - New/newly created/acquired leads → dateFilterField: "createdAt".
+  - Updated/changed/activity leads → dateFilterField: "updatedAt".
+  - Grouping by responsible while filtering new leads is valid: yAxis responsible, dateFilterField createdAt.
+  - dateGranularity still follows a date xAxis; it is independent of dateFilterField.
+
 DATE PRESETS — match user intent precisely using this priority order:
   1. User says "today"                                → _datePreset: "today"
   2. User says "yesterday"                            → _datePreset: "yesterday"
@@ -314,7 +331,7 @@ LAYOUT DEFAULTS:
   - showLegend: true
   - showDataLabels: true
   - barOrientation: "vertical" (default), use "horizontal" when category labels are long
-  - numberSplitCount: 0 (for number chart breakdowns, default is none)
+  - numberSplitCount: "auto" for Number charts; it shows every grouping up to the top 15
 
 ════════════════════════════════════════════════════════
 COLLECTION SELECTION RULES

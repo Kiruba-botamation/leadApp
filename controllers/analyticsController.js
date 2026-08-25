@@ -86,7 +86,7 @@ class AnalyticsController {
     try {
       // Support both POST (body) and GET (query params)
       const source = req.body && Object.keys(req.body).length ? req.body : req.query;
-      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, collectionId, acctId: acctIdSource, dateGranularity } = source;
+      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, dateFilterField, collectionId, acctId: acctIdSource, dateGranularity } = source;
 
       // acctId always comes from the request (query/body) — never from req.user
       const acctId = acctIdSource || req.headers['x-acctno'];
@@ -118,20 +118,43 @@ class AnalyticsController {
       const validGranularities = ['hour', 'day', 'month', 'year'];
       const resolvedGranularity = validGranularities.includes(dateGranularity) ? dateGranularity : null;
 
+      // Keep old clients compatible: date axes historically filtered themselves,
+      // while categorical axes filtered by updatedAt.
+      const validDateFilterFields = ['createdAt', 'updatedAt'];
+      if (dateFilterField && !validDateFilterFields.includes(dateFilterField)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid date filter field. Allowed values: ${validDateFilterFields.join(', ')}`
+        });
+      }
+      const resolvedDateFilterField = dateFilterField
+        || (validDateFilterFields.includes(xAxis) ? xAxis : 'updatedAt');
+
       // Parse and validate dates if provided
       let dateFilter = null;
       if (dateFrom || dateTo) {
-        const from = dateFrom ? new Date(dateFrom) : null;
-        const to = dateTo ? new Date(new Date(dateTo).setHours(23, 59, 59, 999)) : null;
+        const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
+        const parseUtcDate = (value) => {
+          if (!value || !dateOnlyPattern.test(value)) return null;
+          const parsed = new Date(`${value}T00:00:00.000Z`);
+          return !isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? parsed : null;
+        };
+        const from = parseUtcDate(dateFrom);
+        const toExclusive = parseUtcDate(dateTo);
+        if (toExclusive) toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
 
-        if ((from && isNaN(from.getTime())) || (to && isNaN(to.getTime()))) {
+        if ((dateFrom && !from) || (dateTo && !toExclusive)
+          || (from && isNaN(from.getTime())) || (toExclusive && isNaN(toExclusive.getTime()))) {
           return res.status(400).json({
             success: false,
             message: 'Invalid date format. Use ISO 8601 format (YYYY-MM-DD)'
           });
         }
+        if (from && toExclusive && from >= toExclusive) {
+          return res.status(400).json({ success: false, message: 'dateFrom must be on or before dateTo' });
+        }
 
-        dateFilter = { from, to };
+        dateFilter = { from, toExclusive };
       }
 
       const chartData = await analyticsService.getChartData({
@@ -140,6 +163,7 @@ class AnalyticsController {
         zAxis: zAxis || null,
         aggregation,
         dateFilter,
+        dateFilterField: resolvedDateFilterField,
         acctId,
         collectionId: collectionId || null,
         dateGranularity: resolvedGranularity

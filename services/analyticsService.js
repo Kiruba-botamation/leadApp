@@ -19,6 +19,9 @@ const GRANULARITY_FORMAT = {
     year:  '%Y',                // e.g. "2025"
 };
 
+const configuredMaxTimeMs = parseInt(process.env.ANALYTICS_MAX_TIME_MS || '15000', 10);
+const ANALYTICS_MAX_TIME_MS = Number.isFinite(configuredMaxTimeMs) ? Math.max(1000, configuredMaxTimeMs) : 15000;
+
 class AnalyticsService {
     /**
      * Get chart data with grouping and aggregation
@@ -26,11 +29,12 @@ class AnalyticsService {
      * @param {string} params.xAxis - Field to group by for X-axis (e.g., 'createdAt', 'trainerName')
      * @param {string} params.yAxis - Field to aggregate for Y-axis (e.g., 'memberName')
      * @param {string} params.aggregation - Aggregation type (count, sum, avg, min, max)
-     * @param {Object} params.dateFilter - Optional date range filter { from: Date, to: Date }
+     * @param {Object} params.dateFilter - Optional UTC date range { from: Date, toExclusive: Date }
+     * @param {'createdAt'|'updatedAt'} params.dateFilterField - Timestamp field used by the range filter
      * @param {string|null} params.dateGranularity - 'hour'|'day'|'month'|'year' — only used when xAxis is a date field
      * @returns {Promise<Array>} - Aggregated chart data
      */
-    async getChartData({ xAxis, yAxis, zAxis, aggregation, dateFilter, acctId, collectionId, dateGranularity }) {
+    async getChartData({ xAxis, yAxis, zAxis, aggregation, dateFilter, dateFilterField, acctId, collectionId, dateGranularity }) {
         try {
             const pipeline = [];
             const isDateAxis = DATE_AXIS_FIELDS.includes(xAxis);
@@ -45,16 +49,8 @@ class AnalyticsService {
             if (dateFilter && (dateFilter.from || dateFilter.to)) {
                 const dateMatch = {};
                 if (dateFilter.from) dateMatch.$gte = dateFilter.from;
-                if (dateFilter.to)   dateMatch.$lte = dateFilter.to;
-
-                // Apply the date range to the actual xAxis field when it is a date field,
-                // so that filtering by createdAt range works correctly when xAxis = 'createdAt'.
-                // Always also filter updatedAt to catch records updated in the window.
-                if (isDateAxis) {
-                    matchStage[xAxis] = dateMatch;
-                } else {
-                    matchStage.updatedAt = dateMatch;
-                }
+                if (dateFilter.toExclusive) dateMatch.$lt = dateFilter.toExclusive;
+                matchStage[dateFilterField] = dateMatch;
             }
 
             pipeline.push({ $match: matchStage });
@@ -116,7 +112,7 @@ class AnalyticsService {
                 });
             }
 
-            const rows = await performAggregate(Lead, pipeline);
+            const rows = await performAggregate(Lead, pipeline, { maxTimeMS: ANALYTICS_MAX_TIME_MS });
             return await this._enrichNames(rows, { xAxis, zAxis, acctId, collectionId });
         } catch (error) {
             console.error('Error in getChartData:', error);
@@ -186,13 +182,12 @@ class AnalyticsService {
      * @private
      */
     _getAggregationExpression(aggregation, field) {
-        // For numeric aggregations, wrap in $toDouble so string-encoded numbers
-        // (e.g. phone stored as "9000000001") are handled — and non-numeric strings
-        // coerce to null which $sum/$avg ignores (falls back to 0/count behaviour).
+        // Convert string-encoded numbers safely; malformed values become null so
+        // one bad dynamic-field value cannot abort the entire aggregation.
         // Use count for pure categorical yAxis fields.
         const numericAggregations = ['sum', 'avg', 'min', 'max'];
         const fieldExpr = numericAggregations.includes(aggregation)
-            ? { $toDouble: `$${field}` }
+            ? { $convert: { input: `$${field}`, to: 'double', onError: null, onNull: null } }
             : `$${field}`;
 
         const expressions = {
