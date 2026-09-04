@@ -6,9 +6,6 @@
  * The reminder owner is the lead-app userId from the authenticated session (req.user.userId).
  */
 import reminderService from '../services/reminderService.js';
-import Lead from '../models/leadModel.js';
-import LeadReminder from '../models/leadReminderModel.js';
-import logger from '../utils/logger.js';
 
 const VALID_CHANNELS        = ['inApp', 'push', 'email', 'whatsapp'];
 const VALID_CLIENT_CHANNELS = ['email', 'whatsapp', 'sms'];
@@ -28,11 +25,20 @@ class ReminderController {
 
             // All admins can see all reminders for a lead — no adminId filter here.
             // adminId is only enforced on create / update / delete (creator-only writes).
-            const reminders = await reminderService.getReminders(acctId, leadId);
-            return res.status(200).json({ success: true, data: reminders });
+            const result = await reminderService.getReminders(acctId, leadId, {
+                cursor: req.query.cursor,
+                limit: req.query.limit,
+            });
+            return res.status(200).json({
+                success: true,
+                data: result.items,
+                nextCursor: result.nextCursor,
+                hasMore: result.hasMore,
+                limit: result.limit,
+            });
         } catch (err) {
             console.error('[ReminderController] getReminders:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -53,16 +59,22 @@ class ReminderController {
             } = req.body;
 
             if (!acctId || !userId) return res.status(400).json({ success: false, message: 'Account context required' });
-            if (!description?.trim()) return res.status(400).json({ success: false, message: 'description is required' });
+            if (typeof description !== 'string' || !description.trim()) return res.status(400).json({ success: false, message: 'description is required' });
             if (!scheduledAt) return res.status(400).json({ success: false, message: 'scheduledAt is required' });
+            if (channels !== undefined && !Array.isArray(channels)) {
+                return res.status(400).json({ success: false, message: 'channels must be an array' });
+            }
+            if (clientChannels !== undefined && !Array.isArray(clientChannels)) {
+                return res.status(400).json({ success: false, message: 'clientChannels must be an array' });
+            }
 
-            if (new Date(scheduledAt) <= new Date()) {
+            if (Number.isNaN(new Date(scheduledAt).getTime()) || new Date(scheduledAt) <= new Date()) {
                 return res.status(400).json({ success: false, message: 'scheduledAt must be in the future' });
             }
 
             // Validate optional pre-reminder fields
             if (preReminderEnabled) {
-                if (!preReminderValue || !preReminderUnit) {
+                if (!Number.isFinite(Number(preReminderValue)) || Number(preReminderValue) <= 0 || !preReminderUnit) {
                     return res.status(400).json({ success: false, message: 'preReminderValue and preReminderUnit are required when preReminderEnabled is true' });
                 }
                 if (!VALID_UNITS.includes(preReminderUnit)) {
@@ -73,13 +85,13 @@ class ReminderController {
             // Validate optional client reminder fields
             let validClientChannels = [];
             if (clientReminderEnabled) {
-                if (!clientMessage?.trim()) {
+                if (typeof clientMessage !== 'string' || !clientMessage.trim()) {
                     return res.status(400).json({ success: false, message: 'clientMessage is required when clientReminderEnabled is true' });
                 }
                 if (!clientScheduledAt) {
                     return res.status(400).json({ success: false, message: 'clientScheduledAt is required when clientReminderEnabled is true' });
                 }
-                if (new Date(clientScheduledAt) <= new Date()) {
+                if (Number.isNaN(new Date(clientScheduledAt).getTime()) || new Date(clientScheduledAt) <= new Date()) {
                     return res.status(400).json({ success: false, message: 'clientScheduledAt must be in the future' });
                 }
                 validClientChannels = (clientChannels || []).filter(c => VALID_CLIENT_CHANNELS.includes(c));
@@ -101,28 +113,10 @@ class ReminderController {
                 clientChannels:        validClientChannels,
             });
 
-            // Best-effort: populate lead snapshot + client contact info (from system fields)
-            try {
-                const lead = await Lead.findById(leadId).lean();
-                if (lead) {
-                    await LeadReminder.findByIdAndUpdate(reminder._id, {
-                        leadSnapshot: {
-                            name:  String(lead.name  || ''),
-                            phone: String(lead.phone || ''),
-                        },
-                        clientName:  String(lead.name  || ''),
-                        clientPhone: String(lead.phone || ''),
-                        clientEmail: String(lead.email || ''),
-                    });
-                }
-            } catch (snapErr) {
-                logger.warn('[ReminderController] leadSnapshot error:', snapErr.message);
-            }
-
             return res.status(201).json({ success: true, message: 'Reminder created', data: reminder });
         } catch (err) {
             console.error('[ReminderController] createReminder:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -132,16 +126,39 @@ class ReminderController {
      */
     async updateReminder(req, res) {
         try {
-            const { reminderId } = req.params;
+            const { leadId, reminderId } = req.params;
             const updates = req.body;
             const userId = req.user?.userId;
             const acctId = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
             const isSuperadmin = req.user?.accessLevel === 'superadmin';
 
+            if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            if (updates.scheduledAt && new Date(updates.scheduledAt) <= new Date()) {
+            if (updates.description !== undefined) {
+                if (typeof updates.description !== 'string' || !updates.description.trim()) return res.status(400).json({ success: false, message: 'description is required' });
+                updates.description = updates.description.trim();
+            }
+
+            if (updates.scheduledAt && (Number.isNaN(new Date(updates.scheduledAt).getTime()) || new Date(updates.scheduledAt) <= new Date())) {
                 return res.status(400).json({ success: false, message: 'scheduledAt must be in the future' });
+            }
+
+            if (updates.channels !== undefined && !Array.isArray(updates.channels)) {
+                return res.status(400).json({ success: false, message: 'channels must be an array' });
+            }
+            if (updates.clientChannels !== undefined && !Array.isArray(updates.clientChannels)) {
+                return res.status(400).json({ success: false, message: 'clientChannels must be an array' });
+            }
+            if (updates.clientMessage !== undefined && typeof updates.clientMessage !== 'string') {
+                return res.status(400).json({ success: false, message: 'clientMessage must be a string' });
+            }
+            if (updates.preReminderValue !== undefined &&
+                (!Number.isFinite(Number(updates.preReminderValue)) || Number(updates.preReminderValue) <= 0)) {
+                return res.status(400).json({ success: false, message: 'preReminderValue must be a positive number' });
+            }
+            if (updates.preReminderUnit !== undefined && !VALID_UNITS.includes(updates.preReminderUnit)) {
+                return res.status(400).json({ success: false, message: `preReminderUnit must be one of: ${VALID_UNITS.join(', ')}` });
             }
 
             if (updates.channels) {
@@ -150,13 +167,13 @@ class ReminderController {
 
             // Validate client reminder fields if enabled
             if (updates.clientReminderEnabled) {
-                if (!updates.clientMessage?.trim()) {
+                if (typeof updates.clientMessage !== 'string' || !updates.clientMessage.trim()) {
                     return res.status(400).json({ success: false, message: 'clientMessage is required when clientReminderEnabled is true' });
                 }
                 if (!updates.clientScheduledAt) {
                     return res.status(400).json({ success: false, message: 'clientScheduledAt is required when clientReminderEnabled is true' });
                 }
-                if (new Date(updates.clientScheduledAt) <= new Date()) {
+                if (Number.isNaN(new Date(updates.clientScheduledAt).getTime()) || new Date(updates.clientScheduledAt) <= new Date()) {
                     return res.status(400).json({ success: false, message: 'clientScheduledAt must be in the future' });
                 }
                 const validClientChs = (updates.clientChannels || []).filter(c => VALID_CLIENT_CHANNELS.includes(c));
@@ -168,7 +185,7 @@ class ReminderController {
                 updates.clientChannels = updates.clientChannels.filter(c => VALID_CLIENT_CHANNELS.includes(c));
             }
 
-            const updated = await reminderService.updateReminder(reminderId, userId, updates, { isSuperadmin, acctId });
+            const updated = await reminderService.updateReminder(acctId, leadId, reminderId, userId, updates, { isSuperadmin });
             if (!updated) {
                 return res.status(404).json({ success: false, message: 'Reminder not found or you do not have permission to edit it' });
             }
@@ -176,7 +193,7 @@ class ReminderController {
             return res.status(200).json({ success: true, message: 'Reminder updated', data: updated });
         } catch (err) {
             console.error('[ReminderController] updateReminder:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -186,14 +203,15 @@ class ReminderController {
      */
     async deleteReminder(req, res) {
         try {
-            const { reminderId } = req.params;
+            const { leadId, reminderId } = req.params;
             const userId         = req.user?.userId;
             const acctId         = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
             const isSuperadmin   = req.user?.accessLevel === 'superadmin';
 
+            if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            const deleted = await reminderService.deleteReminder(reminderId, userId, { isSuperadmin, acctId });
+            const deleted = await reminderService.deleteReminder(acctId, leadId, reminderId, userId, { isSuperadmin });
             if (!deleted) {
                 return res.status(404).json({ success: false, message: 'Reminder not found or you do not have permission to delete it' });
             }
@@ -201,7 +219,7 @@ class ReminderController {
             return res.status(200).json({ success: true, message: 'Reminder deleted' });
         } catch (err) {
             console.error('[ReminderController] deleteReminder:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -212,12 +230,14 @@ class ReminderController {
     async getFiredReminders(req, res) {
         try {
             const userId = req.user?.userId;
+            const acctId = req.query.acctId || req.headers['x-acctno'] || null;
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-            const limit = Math.min(50, parseInt(req.query.limit, 10) || 10);
+            const page = Math.min(1000, Math.max(1, parseInt(req.query.page, 10) || 1));
+            const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
 
-            const { items, total, unread } = await reminderService.getFiredUnreadReminders(userId, { page, limit });
+            const includeCounts = req.query.includeCounts === 'true';
+            const { items, total, unread, hasMore } = await reminderService.getFiredUnreadReminders(userId, { acctId, page, limit, includeCounts });
             return res.status(200).json({
                 success: true,
                 data: items,
@@ -225,11 +245,11 @@ class ReminderController {
                 total,
                 page,
                 limit,
-                hasMore: page * limit < total,
+                hasMore,
             });
         } catch (err) {
             console.error('[ReminderController] getFiredReminders:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -253,11 +273,11 @@ class ReminderController {
                 return res.status(400).json({ success: false, message: 'start and end must be valid dates' });
             }
 
-            const items = await reminderService.getCalendarReminders(acctId, userId, startDate, endDate);
-            return res.status(200).json({ success: true, data: items });
+            const result = await reminderService.getCalendarReminders(acctId, userId, startDate, endDate);
+            return res.status(200).json({ success: true, data: result.items, hasMore: result.hasMore, limit: result.limit });
         } catch (err) {
             console.error('[ReminderController] getCalendarReminders:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -268,15 +288,16 @@ class ReminderController {
     async markRead(req, res) {
         try {
             const userId = req.user?.userId;
+            const acctId = req.query.acctId || req.headers['x-acctno'] || null;
             const { reminderIds } = req.body;
 
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            await reminderService.markRemindersRead(userId, reminderIds);
+            await reminderService.markRemindersRead(userId, reminderIds, acctId);
             return res.status(200).json({ success: true, message: 'Reminders marked as read' });
         } catch (err) {
             console.error('[ReminderController] markRead:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -288,13 +309,14 @@ class ReminderController {
         try {
             const { reminderId } = req.params;
             const userId = req.user?.userId;
+            const acctId = req.query.acctId || req.headers['x-acctno'] || null;
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            await reminderService.deleteFiredReminder(reminderId, userId);
+            await reminderService.deleteFiredReminder(reminderId, userId, acctId);
             return res.status(200).json({ success: true, message: 'Reminder dismissed' });
         } catch (err) {
             console.error('[ReminderController] dismissFired:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -317,7 +339,7 @@ class ReminderController {
             return res.status(200).json({ success: true, data: counts });
         } catch (err) {
             console.error('[ReminderController] getBatchReminderCounts:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 }

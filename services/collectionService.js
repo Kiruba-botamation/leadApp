@@ -1,5 +1,8 @@
 import LeadCollection from '../models/leadCollectionModel.js';
 import Lead from '../models/leadModel.js';
+import LeadNote from '../models/leadNoteModel.js';
+import LeadReminder from '../models/leadReminderModel.js';
+import { cancelReminderJobs } from '../queue/reminderQueue.js';
 import { performGet, perfomDataExistanceCheck, performCount } from '../config/mongoConnector.js';
 
 /**
@@ -59,6 +62,41 @@ export const STAGE_FIELD = {
 export const DEFAULT_STAGE_COLOR = '#4f46e5';
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const DELETE_BATCH_SIZE = 200;
+
+async function deleteReminderBatch(acctId, leadIds) {
+    const reminders = await LeadReminder.find(
+        { acctId, leadId: { $in: leadIds } },
+        { _id: 1 }
+    ).limit(DELETE_BATCH_SIZE).lean();
+    if (!reminders.length) return false;
+    const reminderIds = reminders.map(reminder => reminder._id);
+
+    // Workers require an unsent state to claim a reminder. Neutralize in Mongo
+    // first so cancellation remains safe when Redis is unavailable.
+    await LeadReminder.updateMany(
+        { _id: { $in: reminderIds }, acctId },
+        {
+            $set: {
+                mainSent: true,
+                preReminderSent: true,
+                clientSent: true,
+                jobScheduled: false,
+                clientJobScheduled: false
+            }
+        }
+    );
+    for (const reminderId of reminderIds) await cancelReminderJobs(reminderId);
+    await LeadReminder.deleteMany({ _id: { $in: reminderIds }, acctId });
+    return true;
+}
+
+async function deleteLeadDependents(acctId, leadIds) {
+    while (await deleteReminderBatch(acctId, leadIds)) {
+        // Drain the next bounded reminder batch.
+    }
+    await LeadNote.deleteMany({ acctId, leadId: { $in: leadIds } });
+}
 
 /** Coerce a colour to a valid 6-digit hex, falling back to the default. */
 function normaliseColor(color) {
@@ -268,11 +306,25 @@ class CollectionService {
             throw err;
         }
 
-        const leadsResult = await Lead.deleteMany({ acctId, collectionId });
+        let deletedLeads = 0;
+        while (true) {
+            const leads = await Lead.find({ acctId, collectionId }, { _id: 1 })
+                .sort({ _id: 1 })
+                .limit(DELETE_BATCH_SIZE)
+                .lean();
+            if (!leads.length) break;
+            const leadIds = leads.map(lead => lead._id);
+
+            await deleteLeadDependents(acctId, leadIds);
+            const result = await Lead.deleteMany({ acctId, collectionId, _id: { $in: leadIds } });
+            deletedLeads += result.deletedCount ?? 0;
+            // Catch dependents created after the first sweep but before lead removal.
+            await deleteLeadDependents(acctId, leadIds);
+        }
         await LeadCollection.deleteOne({ _id: collectionId, acctId });
 
         return {
-            deletedLeads:      leadsResult.deletedCount,
+            deletedLeads,
             deletedCollection: true,
             collectionName:    collection.collectionName
         };
@@ -456,6 +508,11 @@ class CollectionService {
      */
     _validateAndNormaliseFields(fields) {
         if (!Array.isArray(fields)) return [];
+        if (fields.length > 100) {
+            const err = new Error('A collection cannot contain more than 100 fields');
+            err.statusCode = 400;
+            throw err;
+        }
 
         const systemFieldMap = new Map(SYSTEM_FIELDS.map(f => [f.field, f]));
         const seen           = new Set();
@@ -473,7 +530,7 @@ class CollectionService {
 
             if (!f.label || typeof f.label !== 'string') continue;
 
-            const label    = f.label.trim();
+            const label    = f.label.trim().slice(0, 100);
             const fieldKey = normaliseFieldKey(label);
             const type     = ['text', 'number', 'date', 'boolean'].includes(f.type) ? f.type : 'text';
 

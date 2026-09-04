@@ -1,7 +1,5 @@
 import leadService from '../services/leadService.js';
 import { addToQueue } from '../queue/leadQueue.js';
-import UserAccount from '../models/userAccountModel.js';
-import { perfomDataExistanceCheck } from '../config/mongoConnector.js';
 
 const QUEUE_ENQUEUE_TIMEOUT_MS = parseInt(process.env.LEAD_QUEUE_ENQUEUE_TIMEOUT_MS ?? '3000', 10);
 
@@ -93,19 +91,25 @@ class LeadController {
                 acctId: acctIdQuery,
                 collectionId,
                 fieldFilters,
-                responsibleFilter
+                responsibleFilter,
+                cursor,
+                includeCount,
+                fields
             } = req.query;
 
             const acctId = acctIdQuery || req.headers['x-acctno'] || req.acctId;
             if (!acctId) {
                 return res.status(400).json({ success: false, message: 'acctId is required' });
             }
+            if (includeCount !== undefined && !['true', 'false'].includes(includeCount)) {
+                return res.status(400).json({ success: false, message: 'includeCount must be true or false' });
+            }
 
-            const sortOrderVal = sortOrder === 'asc' ? 1 : sortOrder === 'desc' ? -1 : (sortOrder ? parseInt(sortOrder) : -1);
+            const sortOrderVal = sortOrder === 'asc' ? 1 : sortOrder === 'desc' ? -1 : (sortOrder ? Number(sortOrder) : -1);
 
             const result = await leadService.getAllLeads({
-                page:         page  ? parseInt(page)  : 1,
-                limit:        limit ? parseInt(limit) : 10,
+                page:         page ?? 1,
+                limit:        limit ?? 10,
                 sortBy:       sortBy || 'updatedAt',
                 sortOrder:    sortOrderVal,
                 search,
@@ -113,6 +117,9 @@ class LeadController {
                 collectionId,
                 fieldFilters,
                 responsibleFilter,
+                cursor,
+                includeCount: includeCount === 'true' || page !== undefined,
+                requestedFields: fields,
                 // Per-admin visibility — superadmins see all, others see only their assigned leads
                 accessLevel:  req.user?.accessLevel ?? null,
                 userId:       req.user?.userId ?? null
@@ -136,11 +143,8 @@ class LeadController {
             if (!callerAcctId) {
                 return res.status(400).json({ success: false, message: 'Authenticated account context is required' });
             }
-            const lead = await leadService.getLeadById(id);
+            const lead = await leadService.getLeadById(id, callerAcctId);
             if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
-            if (String(lead.acctId) !== String(callerAcctId)) {
-                return res.status(403).json({ success: false, message: 'Access denied' });
-            }
             return res.status(200).json({ success: true, data: lead });
         } catch (error) {
             console.error('[LeadController] getLeadById:', error);
@@ -167,10 +171,10 @@ class LeadController {
                 return res.status(400).json({ success: false, message: 'No update data provided' });
             }
 
-            const existing = await leadService.getLeadById(id);
+            const existing = await leadService.getLeadById(id, callerAcctId);
             if (!existing) return res.status(404).json({ success: false, message: 'Lead not found' });
-            if (String(existing.acctId) !== String(callerAcctId)) {
-                return res.status(403).json({ success: false, message: 'Access denied: lead does not belong to your account' });
+            if (req.user?.accessLevel !== 'superadmin' && String(existing.responsible || '') !== String(req.user?.userId || '')) {
+                return res.status(403).json({ success: false, message: 'You can update only leads assigned to you' });
             }
 
             const updated = await leadService.updateLead(id, updateData, {
@@ -193,18 +197,7 @@ class LeadController {
     async deleteLead(req, res) {
         try {
             const { id }         = req.params;
-            const bodyAcctId     = req.query?.acctId || req.body?.acctId;
-            let   callerAcctId   = bodyAcctId || req.headers['x-acctno'] || req.acctId;
-
-            if (!callerAcctId) {
-                if (bodyAcctId && req.user?.userId) {
-                    const linked = await perfomDataExistanceCheck(UserAccount, { userId: req.user.userId, acctId: bodyAcctId });
-                    if (!linked) return res.status(403).json({ success: false, message: 'Access denied' });
-                    callerAcctId = bodyAcctId;
-                } else {
-                    callerAcctId = bodyAcctId;
-                }
-            }
+            const callerAcctId = req.tenant?.acctId;
             if (!callerAcctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
             // Destructive: only super admins may delete a lead
@@ -212,13 +205,10 @@ class LeadController {
                 return res.status(403).json({ success: false, message: 'Only super admins can delete a lead' });
             }
 
-            const existing = await leadService.getLeadById(id);
+            const existing = await leadService.getLeadById(id, callerAcctId);
             if (!existing) return res.status(404).json({ success: false, message: 'Lead not found' });
-            if (String(existing.acctId) !== String(callerAcctId)) {
-                return res.status(403).json({ success: false, message: 'Access denied: lead does not belong to your account' });
-            }
 
-            await leadService.deleteLead(id);
+            await leadService.deleteLead(id, callerAcctId);
             return res.status(200).json({ success: true, message: 'Lead deleted successfully' });
         } catch (error) {
             console.error('[LeadController] deleteLead:', error);

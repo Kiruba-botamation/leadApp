@@ -15,7 +15,7 @@ const requireSuperadmin = (req, res) => {
     return true;
 };
 
-const resolveAcctId = (req) => req.query.acctId || req.body.acctId || req.headers['x-acctno'];
+const resolveAcctId = (req) => req.tenant?.acctId;
 
 /** GET /api/ui/webhooks — list configs + available events */
 export const listWebhooks = async (req, res) => {

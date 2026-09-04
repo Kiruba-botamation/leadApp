@@ -7,8 +7,11 @@ import {
     listDeliveries,
     listVariables
 } from '../controllers/webhookController.js';
+import { requireSuperadmin } from '../middleware/verifiedTenantMiddleware.js';
 
 const router = express.Router();
+
+router.use(requireSuperadmin);
 
 /** GET /deliveries — recent delivery log (declare before /:id routes) */
 router.get('/deliveries', listDeliveries);

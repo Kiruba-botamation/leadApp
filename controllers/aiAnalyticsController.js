@@ -19,10 +19,8 @@ class AiAnalyticsController {
      */
     async chat(req, res) {
         try {
-            const { message, history = [], acctId: bodyAcctId, currentCharts = [] } = req.body;
-
-            // acctId always comes from the request (body/query) — never from req.user
-            const acctId = bodyAcctId || req.query.acctId || req.headers['x-acctno'] || req.acctId;
+            const { message, history = [], currentCharts = [] } = req.body;
+            const acctId = req.tenant?.acctId;
 
             // ── Input validation ────────────────────────────────────────────
             if (!acctId) {

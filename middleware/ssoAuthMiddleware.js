@@ -1,58 +1,9 @@
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
-import AccountAdmin from '../models/accountAdminModel.js';
 
-// ── In-memory cache: 'userId:acctId' → { accessLevel, exp } ──────────────────
-// Avoids a DB round-trip on every request while keeping identity fresh.
-const _adminCache = new Map();
-const ADMIN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-/** Invalidate the cached admin entry for a user/account (call after access-level changes). */
-export function invalidateAdminCache(userId, acctId) {
-    _adminCache.delete(`${userId}:${acctId}`);
-}
-
-/**
- * Resolves the logged-in user's admin status for the given account.
- *
- * Sets on req.user:
- *   - isAdmin: whether the user is an admin of this account
- *   - accessLevel: 'superadmin' | 'admin' | null (null = not an admin here)
- *
- * Identity is keyed by userId (the canonical reference) scoped to acctId, since
- * the same user can be an admin of multiple accounts with different access levels.
- * When acctId is absent we cannot identify the account, so accessLevel is null.
- *
- * acctId is intentionally NOT stored on req.user — it always comes from the
- * request (query param / body / path param) so account switching works.
- */
-async function enrichWithAccountAdminId(user, acctId) {
-    if (!user?.userId || !acctId) {
-        user.isAdmin = false;
-        user.accessLevel = null;
-        return;
-    }
-
-    const key    = `${user.userId}:${acctId}`;
-    const cached = _adminCache.get(key);
-    if (cached && cached.exp > Date.now()) {
-        user.isAdmin = cached.accessLevel != null;
-        user.accessLevel = cached.accessLevel;
-        return;
-    }
-
-    try {
-        const rec = await AccountAdmin.findOne({ userId: user.userId, acctId }, { accessLevel: 1 }).lean();
-        const accessLevel = rec?.accessLevel ?? null;
-        _adminCache.set(key, { accessLevel, exp: Date.now() + ADMIN_CACHE_TTL });
-        user.isAdmin = accessLevel != null;
-        user.accessLevel = accessLevel;
-    } catch (err) {
-        console.warn('[SSO] enrichWithAccountAdminId error:', err.message);
-        user.isAdmin = false;
-        user.accessLevel = null;
-    }
-}
+// Kept for callers that invalidate after mutations. Tenant authorization is deliberately
+// uncached, so access revocation takes effect on the next request and memory stays bounded.
+export function invalidateAdminCache() {}
 
 /**
  * Check if authentication should be skipped for local development.
@@ -122,8 +73,6 @@ const ssoAuthMiddleware = async (req, res, next) => {
     const skipUser = getSkipLoginUser();
     if (skipUser) {
         req.user = skipUser;
-        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
-        await enrichWithAccountAdminId(req.user, acctId);
         return next();
     }
 
@@ -166,8 +115,6 @@ const ssoAuthMiddleware = async (req, res, next) => {
             permissions: decoded.permissions || [],
         };
 
-        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
-        await enrichWithAccountAdminId(req.user, acctId);
         return next();
     } catch (error) {
         console.log('[SSO] Access token invalid (%s) — trying refresh', error.message);
@@ -240,8 +187,6 @@ async function tryRefreshToken(req, res, next, refreshToken) {
             permissions: decoded.permissions || [],
         };
 
-        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
-        await enrichWithAccountAdminId(req.user, acctId);
         return next();
     } catch (error) {
         console.error('[SSO] Refresh failed:', error.message);
@@ -298,8 +243,6 @@ export const hybridAuthMiddleware = async (req, res, next) => {
     const skipUser = getSkipLoginUser();
     if (skipUser) {
         req.user = skipUser;
-        const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
-        await enrichWithAccountAdminId(req.user, acctId);
         return next();
     }
 
@@ -315,8 +258,6 @@ export const hybridAuthMiddleware = async (req, res, next) => {
                 role:   decoded.role,
                 permissions: decoded.permissions || [],
             };
-            const acctId = req.query?.acctId || req.body?.acctId || req.headers?.['x-acctno'];
-            await enrichWithAccountAdminId(req.user, acctId);
             return next();
         } catch (err) {
             // Fall through to cookie-based auth

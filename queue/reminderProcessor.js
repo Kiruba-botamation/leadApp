@@ -1,158 +1,248 @@
 /**
  * Reminder Processor
  *
- * The BullMQ worker calls this function for each scheduled job.
- *
- * Job data shape:
- * {
- *   reminderId : string
- *   jobType    : 'main' | 'pre' | 'client'
- * }
+ * Mongo is the durable source of truth. Every dispatch first acquires a
+ * per-reminder, per-channel lease so BullMQ workers and recovery workers on
+ * multiple instances cannot dispatch the same reminder concurrently.
  */
-import LeadReminder    from '../models/leadReminderModel.js';
-import AccountAdmin    from '../models/accountAdminModel.js';
-import Lead            from '../models/leadModel.js';
+import { randomUUID } from 'node:crypto';
+import LeadReminder from '../models/leadReminderModel.js';
+import AccountAdmin from '../models/accountAdminModel.js';
+import Lead from '../models/leadModel.js';
 import { dispatchNotification, dispatchClientNotification } from '../services/channelDispatcher.js';
-import { getRedisConnection }   from '../config/redisConnector.js';
+import { getRedisConnection } from '../config/redisConnector.js';
 import logger from '../utils/logger.js';
 
-/**
- * Process admin reminder (main or pre).
- * Shared by the BullMQ worker AND the recovery cron.
- *
- * @param {string} reminderId
- * @param {'main'|'pre'} jobType
- */
-export const processReminder = async (reminderId, jobType = 'main') => {
-    const reminder = await LeadReminder.findById(reminderId);
+export const CLAIM_LEASE_MS = 15 * 60 * 1000;
 
-    if (!reminder) {
-        logger.warn(`[ReminderProcessor] Reminder ${reminderId} not found — skipping`);
-        return;
-    }
-
-    // Guard against duplicate delivery
-    if (jobType === 'main'  && reminder.mainSent) {
-        logger.info(`[ReminderProcessor] Main reminder ${reminderId} already sent — skipping`);
-        return;
-    }
-    if (jobType === 'pre' && reminder.preReminderSent) {
-        logger.info(`[ReminderProcessor] Pre-reminder ${reminderId} already sent — skipping`);
-        return;
-    }
-
-    // Recipient is the lead's CURRENT responsible at fire time, falling back to the
-    // creator when the lead is unassigned. This makes a reassigned reminder reach the
-    // new assignee. Contact info (email/phone) comes from the live admin record.
-    const lead = await Lead.findById(reminder.leadId, { responsible: 1 }).lean();
-    const recipientUserId = lead?.responsible || reminder.userId;
-
-    const recipientAdmin = await AccountAdmin.findOne(
-        { acctId: reminder.acctId, userId: recipientUserId },
-        { firstName: 1, lastName: 1, email: 1, phone: 1 }
-    ).lean();
-
-    // If the recipient is no longer an admin of the account, skip silently —
-    // mark as fired so it isn't retried, but deliver nothing.
-    if (!recipientAdmin) {
-        const skipUpdate = jobType === 'main'
-            ? { mainSent: true, notificationRead: false, notifiedUserId: null }
-            : { preReminderSent: true };
-        await LeadReminder.findByIdAndUpdate(reminderId, skipUpdate);
-        logger.info(`[ReminderProcessor] ${jobType} reminder ${reminderId} — no current admin recipient, skipped silently`);
-        return;
-    }
-
-    const adminInfo = {
-        firstName: recipientAdmin.firstName || '',
-        lastName:  recipientAdmin.lastName  || '',
-        email:     recipientAdmin.email || null,
-        phone:     recipientAdmin.phone || null,
-    };
-
-    const payload = {
-        reminderId:  reminder._id.toString(),
-        description: reminder.description,
-        scheduledAt: reminder.scheduledAt,
-        leadId:      reminder.leadId,
-        type:        jobType,
-        leadName:    reminder.leadSnapshot?.name  || '',
-        leadPhone:   reminder.leadSnapshot?.phone || '',
-    };
-
-    await dispatchNotification({
-        channels:       reminder.channels,
-        userId:         recipientUserId,
-        adminInfo,
-        payload,
-        redisPublisher: getRedisConnection()
-    });
-
-    const update = jobType === 'main'
-        ? { mainSent: true, notificationRead: false, notifiedUserId: recipientUserId }
-        : { preReminderSent: true, notifiedUserId: recipientUserId };
-
-    await LeadReminder.findByIdAndUpdate(reminderId, update);
-    logger.info(`[ReminderProcessor] ${jobType} reminder ${reminderId} delivered to ${recipientUserId}`);
+const JOB_CONFIG = {
+    main: {
+        sent: 'mainSent',
+        due: 'scheduledAt',
+        token: 'mainClaimToken',
+        until: 'mainClaimUntil',
+        attempts: 'mainAttempts',
+        error: 'mainLastError',
+    },
+    pre: {
+        sent: 'preReminderSent',
+        due: 'preScheduledAt',
+        token: 'preClaimToken',
+        until: 'preClaimUntil',
+        attempts: 'preAttempts',
+        error: 'preLastError',
+        enabled: 'preReminderEnabled',
+    },
+    client: {
+        sent: 'clientSent',
+        due: 'clientScheduledAt',
+        token: 'clientClaimToken',
+        until: 'clientClaimUntil',
+        attempts: 'clientAttempts',
+        error: 'clientLastError',
+        enabled: 'clientReminderEnabled',
+    },
 };
 
-/**
- * Process client reminder.
- * Dispatches to the lead's own contact info via email/whatsapp/sms.
- * Shared by the BullMQ worker AND the recovery cron.
- *
- * @param {string} reminderId
- */
-export const processClientReminder = async (reminderId) => {
-    const reminder = await LeadReminder.findById(reminderId);
-
-    if (!reminder) {
-        logger.warn(`[ReminderProcessor] Reminder ${reminderId} not found — skipping client reminder`);
-        return;
-    }
-
-    if (!reminder.clientReminderEnabled) {
-        logger.info(`[ReminderProcessor] Client reminder ${reminderId} not enabled — skipping`);
-        return;
-    }
-
-    if (reminder.clientSent) {
-        logger.info(`[ReminderProcessor] Client reminder ${reminderId} already sent — skipping`);
-        return;
-    }
-
-    await dispatchClientNotification({
-        channels:   reminder.clientChannels || [],
-        clientInfo: {
-            name:  reminder.clientName  || '',
-            phone: reminder.clientPhone || '',
-            email: reminder.clientEmail || '',
-        },
-        payload: {
-            reminderId:  reminder._id.toString(),
-            message:     reminder.clientMessage || '',
-            scheduledAt: reminder.clientScheduledAt,
-            leadId:      reminder.leadId,
-        },
-    });
-
-    await LeadReminder.findByIdAndUpdate(reminderId, { clientSent: true });
-    logger.info(`[ReminderProcessor] Client reminder ${reminderId} processed successfully`);
+const calculatePreScheduledAt = (reminder) => {
+    const unitMs = { minutes: 60000, hours: 3600000, days: 86400000 }[reminder.preReminderUnit];
+    if (!unitMs || !reminder.preReminderValue) return null;
+    return new Date(new Date(reminder.scheduledAt).getTime() - (Number(reminder.preReminderValue) * unitMs));
 };
 
-/**
- * BullMQ job processor — called by the worker for each job.
- * Throws on failure so BullMQ can apply configured retry/backoff.
- *
- * @param {import('bullmq').Job} job
- */
+const materializeLegacyPreDate = async (reminderId, scope = {}) => {
+    const filter = { _id: reminderId, preReminderEnabled: true, preScheduledAt: null, ...scope };
+    const reminder = await LeadReminder.findOne(filter, {
+        acctId: 1, leadId: 1, scheduledAt: 1, preReminderValue: 1, preReminderUnit: 1,
+    }).lean();
+    if (!reminder) return;
+    const preScheduledAt = calculatePreScheduledAt(reminder);
+    if (preScheduledAt) {
+        await LeadReminder.updateOne(
+            { _id: reminder._id, acctId: reminder.acctId, leadId: reminder.leadId, preScheduledAt: null },
+            { preScheduledAt }
+        );
+    }
+};
+
+/** Atomically claim one due, unsent delivery. Returns null when another worker owns it. */
+export const claimReminder = async (reminderId, jobType, scope = {}) => {
+    const config = JOB_CONFIG[jobType];
+    if (!config) throw new Error(`Unsupported reminder job type: ${jobType}`);
+    if (jobType === 'pre') await materializeLegacyPreDate(reminderId, scope);
+
+    const now = new Date();
+    const token = randomUUID();
+    const filter = {
+        _id: reminderId,
+        ...scope,
+        [config.sent]: false,
+        [config.due]: { $lte: now },
+        $or: [
+            { [config.until]: null },
+            { [config.until]: { $lte: now } },
+        ],
+    };
+    if (config.enabled) filter[config.enabled] = true;
+
+    return LeadReminder.findOneAndUpdate(
+        filter,
+        {
+            $set: {
+                [config.token]: token,
+                [config.until]: new Date(now.getTime() + CLAIM_LEASE_MS),
+                [config.error]: null,
+            },
+            $inc: { [config.attempts]: 1 },
+        },
+        { new: true }
+    );
+};
+
+const releaseClaim = async (reminder, jobType, error) => {
+    const config = JOB_CONFIG[jobType];
+    await LeadReminder.updateOne(
+        {
+            _id: reminder._id,
+            acctId: reminder.acctId,
+            leadId: reminder.leadId,
+            [config.token]: reminder[config.token],
+            [config.sent]: false,
+        },
+        {
+            $set: {
+                [config.token]: null,
+                [config.until]: null,
+                [config.error]: String(error?.message || error || 'Dispatch failed').slice(0, 1000),
+            },
+        }
+    );
+};
+
+const finishClaim = async (reminder, jobType, extra = {}) => {
+    const config = JOB_CONFIG[jobType];
+    return LeadReminder.updateOne(
+        {
+            _id: reminder._id,
+            acctId: reminder.acctId,
+            leadId: reminder.leadId,
+            [config.token]: reminder[config.token],
+            [config.sent]: false,
+        },
+        {
+            $set: {
+                [config.sent]: true,
+                [config.token]: null,
+                [config.until]: null,
+                [config.error]: null,
+                ...extra,
+            },
+        }
+    );
+};
+
+/** Process an admin reminder after atomically acquiring its Mongo lease. */
+export const processReminder = async (reminderId, jobType = 'main', scope = {}) => {
+    if (!['main', 'pre'].includes(jobType)) throw new Error(`Unsupported admin reminder type: ${jobType}`);
+    const reminder = await claimReminder(reminderId, jobType, scope);
+    if (!reminder) {
+        logger.info(`[ReminderProcessor] ${jobType} reminder ${reminderId} is sent, not due, or already claimed`);
+        return false;
+    }
+
+    try {
+        const lead = await Lead.findOne(
+            { _id: reminder.leadId, acctId: reminder.acctId },
+            { responsible: 1 }
+        ).lean();
+        const recipientUserId = lead?.responsible || reminder.userId;
+        const recipientAdmin = await AccountAdmin.findOne(
+            { acctId: reminder.acctId, userId: recipientUserId },
+            { firstName: 1, lastName: 1, email: 1, phone: 1 }
+        ).lean();
+
+        if (!recipientAdmin) {
+            const extra = jobType === 'main'
+                ? { notificationRead: false, bellDismissed: false, notifiedUserId: null }
+                : {};
+            await finishClaim(reminder, jobType, extra);
+            logger.info(`[ReminderProcessor] ${jobType} reminder ${reminderId} has no current admin recipient`);
+            return true;
+        }
+
+        await dispatchNotification({
+            channels: reminder.channels,
+            userId: recipientUserId,
+            adminInfo: {
+                firstName: recipientAdmin.firstName || '',
+                lastName: recipientAdmin.lastName || '',
+                email: recipientAdmin.email || null,
+                phone: recipientAdmin.phone || null,
+            },
+            payload: {
+                reminderId: reminder._id.toString(),
+                description: reminder.description,
+                scheduledAt: reminder.scheduledAt,
+                leadId: reminder.leadId,
+                type: jobType,
+                leadName: reminder.leadSnapshot?.name || '',
+                leadPhone: reminder.leadSnapshot?.phone || '',
+            },
+            redisPublisher: getRedisConnection(),
+        });
+
+        const extra = jobType === 'main'
+            ? { notificationRead: false, bellDismissed: false, notifiedUserId: recipientUserId }
+            : { notifiedUserId: recipientUserId };
+        const result = await finishClaim(reminder, jobType, extra);
+        if (!result.modifiedCount) throw new Error('Reminder claim expired before finalization');
+        logger.info(`[ReminderProcessor] ${jobType} reminder ${reminderId} delivered to ${recipientUserId}`);
+        return true;
+    } catch (error) {
+        await releaseClaim(reminder, jobType, error);
+        throw error;
+    }
+};
+
+/** Process a client reminder after atomically acquiring its Mongo lease. */
+export const processClientReminder = async (reminderId, scope = {}) => {
+    const reminder = await claimReminder(reminderId, 'client', scope);
+    if (!reminder) {
+        logger.info(`[ReminderProcessor] Client reminder ${reminderId} is sent, not due, disabled, or already claimed`);
+        return false;
+    }
+
+    try {
+        await dispatchClientNotification({
+            channels: reminder.clientChannels || [],
+            clientInfo: {
+                name: reminder.clientName || '',
+                phone: reminder.clientPhone || '',
+                email: reminder.clientEmail || '',
+            },
+            payload: {
+                reminderId: reminder._id.toString(),
+                message: reminder.clientMessage || '',
+                scheduledAt: reminder.clientScheduledAt,
+                leadId: reminder.leadId,
+            },
+        });
+
+        const result = await finishClaim(reminder, 'client');
+        if (!result.modifiedCount) throw new Error('Client reminder claim expired before finalization');
+        logger.info(`[ReminderProcessor] Client reminder ${reminderId} processed successfully`);
+        return true;
+    } catch (error) {
+        await releaseClaim(reminder, 'client', error);
+        throw error;
+    }
+};
+
+/** BullMQ entry point. New jobs include tenant scope; old jobs remain processable. */
 export const processor = async (job) => {
-    const { reminderId, jobType } = job.data;
+    const { reminderId, jobType, acctId, leadId } = job.data;
     logger.info(`[ReminderProcessor] Job [${job.id}] | reminderId=${reminderId} | type=${jobType} | attempt=${job.attemptsMade + 1}`);
-
-    if (jobType === 'client') {
-        await processClientReminder(reminderId);
-    } else {
-        await processReminder(reminderId, jobType);
-    }
+    const scope = acctId && leadId ? { acctId, leadId } : {};
+    if (jobType === 'client') return processClientReminder(reminderId, scope);
+    return processReminder(reminderId, jobType, scope);
 };

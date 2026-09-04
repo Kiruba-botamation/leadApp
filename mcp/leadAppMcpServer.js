@@ -251,6 +251,35 @@ const handleRpc = async (msg, req) => {
             const handler = toolHandlers[toolName];
             if (!handler) return rpcError(id, -32601, `Unknown tool: ${toolName}`);
 
+            if (args.acctId) {
+                const acctId = String(args.acctId).trim();
+                const outerAcctIds = [req.query?.acctId, req.headers?.['x-acctno'], req.headers?.['x-acct-id']]
+                    .filter(value => value !== undefined && value !== null)
+                    .map(String)
+                    .map(value => value.trim());
+                if (!acctId || outerAcctIds.some(value => value !== acctId)) {
+                    return rpcResult(id, {
+                        content: [{ type: 'text', text: 'Error: Conflicting or invalid acctId values were provided' }],
+                        isError: true
+                    });
+                }
+                try {
+                    const membership = await AccountAdmin.exists({ acctId, userId: req.user?.userId });
+                    if (!membership) {
+                        return rpcResult(id, {
+                            content: [{ type: 'text', text: 'Error: Access denied to this account' }],
+                            isError: true
+                        });
+                    }
+                } catch (error) {
+                    return rpcResult(id, {
+                        content: [{ type: 'text', text: 'Error: Unable to verify account access' }],
+                        isError: true
+                    });
+                }
+                args.acctId = acctId;
+            }
+
             // Per-account rate limiting. acctId arrives in the tool args (not on the
             // HTTP request), so enforce here before invoking the handler.
             if (args.acctId) {

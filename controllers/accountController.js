@@ -5,10 +5,21 @@ import acctDataModel from '../models/accountModel.js';
 import accountApiKeyModel from '../models/accountApiKeyModel.js';
 import UserAccount from '../models/userAccountModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
+import Lead from '../models/leadModel.js';
+import LeadCollection from '../models/leadCollectionModel.js';
+import LeadNote from '../models/leadNoteModel.js';
+import LeadReminder from '../models/leadReminderModel.js';
+import LeadExport from '../models/leadExportModel.js';
+import AnalyticsSchema from '../models/analyticsSchemaModel.js';
+import WebhookConfig from '../models/webhookConfigModel.js';
+import WebhookDelivery from '../models/webhookDeliveryModel.js';
 import { performUpsert, performGet, perfomDataExistanceCheck, performDelete } from '../config/mongoConnector.js';
 import { invalidateAdminCache } from '../middleware/ssoAuthMiddleware.js';
 import { generateAccountToken } from '../utils/tokenGenerator.js';
 import logger from '../utils/logger.js';
+import collectionService from '../services/collectionService.js';
+import { deleteStoredExport } from '../services/exportService.js';
+import { cancelReminderJobs } from '../queue/reminderQueue.js';
 
 /**
  * Check if the given email exists in the list of account admins.
@@ -32,14 +43,18 @@ const findAdminByEmail = (admins, email) => {
  */
 export const verifyAccount = async (req, res) => {
     try {
-        const { acctNo, userId, email, phone } = req.body;
+        const { acctNo, phone } = req.body;
+        const userId = req.user?.userId;
+        const email = req.user?.email;
 
         if (!acctNo) {
             return res.status(400).json({ success: false, message: 'Account Number is required' });
         }
 
-        // Ensure the userId in the request matches the authenticated user
-        if (userId && req.user?.userId && userId !== req.user.userId) {
+        if (!userId || !email) {
+            return res.status(400).json({ success: false, message: 'Authenticated user ID and email are required' });
+        }
+        if (req.body.userId && String(req.body.userId) !== String(userId)) {
             return res.status(403).json({ success: false, message: 'Access denied: userId does not match authenticated user' });
         }
 
@@ -49,6 +64,21 @@ export const verifyAccount = async (req, res) => {
         // Check if the account is active
         if (response.active === '1') {
             try {
+                let matchedAdmin;
+                try {
+                    matchedAdmin = findAdminByEmail(await getAdminsService(acctNo), email);
+                } catch (adminError) {
+                    console.error('verifyAccount: Error verifying account admin:', adminError);
+                    return res.status(502).json({ success: false, message: 'Unable to verify account administrator membership' });
+                }
+                if (!matchedAdmin) {
+                    return res.status(403).json({
+                        success: false,
+                        emailMismatch: true,
+                        message: 'You should be an admin of the chatbot account to use this application. Please ask your account administrator for an invitation link to add yourself as admin of chatbot account.'
+                    });
+                }
+
                 const accountData = {
                     acctNo,
                     accountName: response.name || 'Unknown Account',
@@ -88,23 +118,6 @@ export const verifyAccount = async (req, res) => {
                 // Admins are added to account_admins ONLY here — on link.
                 if (email) {
                     try {
-                        const admins = await getAdminsService(acctNo);
-                        const matchedAdmin = findAdminByEmail(admins, email);
-                        if (!matchedAdmin) {
-                            return res.status(403).json({
-                                success: false,
-                                emailMismatch: true,
-                                message: 'You should be an admin of the chatbot account to use this application. Please ask your account administrator for an invitation link to add yourself as admin of chatbot account.',
-                                account: {
-                                    acctId,
-                                    acctNo,
-                                    name: accountData.accountName,
-                                    timezone: accountData.timezone,
-                                    active: true
-                                }
-                            });
-                        }
-
                         // Reconcile the admin record for the linking user, keyed by
                         // chatbotAdminId:
                         //   - existing record for this chatbotAdminId → update email + userId
@@ -159,7 +172,7 @@ export const verifyAccount = async (req, res) => {
                         }
                     } catch (adminError) {
                         console.error('verifyAccount: Error verifying account admin:', adminError);
-                        // Don't fail the entire operation if admin check fails
+                        return res.status(500).json({ success: false, message: 'Failed to link verified account administrator' });
                     }
                 }
 
@@ -312,7 +325,7 @@ export const accountName = async (req, res) => {
 
 /**
  * POST /api/accounts/link-user
- * Link an account to a user without calling the external verification API.
+ * Link an account after verifying the SSO email against the platform admin roster.
  * Supports both flat and nested { userData: {...} } request body formats.
  */
 export const accountLinkToUser = async (req, res) => {
@@ -338,14 +351,19 @@ export const accountLinkToUser = async (req, res) => {
             };
         }
 
-        // Prefer SSO-authenticated user, fall back to body
-        const userId = req.user?.userId || req.body.userId || userData.userData.userId;
+        const userId = req.user?.userId;
+        const authenticatedEmail = req.user?.email;
 
-        if (!userId) {
+        if (!userId || !authenticatedEmail) {
             return res.status(401).json({
                 success: false,
-                message: 'User not authenticated. userId is required.'
+                message: 'Authenticated user ID and email are required.'
             });
+        }
+
+        const suppliedUserId = req.body.userId || userData.userData.userId;
+        if (suppliedUserId && String(suppliedUserId) !== String(userId)) {
+            return res.status(403).json({ success: false, message: 'Access denied: userId does not match authenticated user' });
         }
 
         if (!userData.userData?.acctNo) {
@@ -353,6 +371,19 @@ export const accountLinkToUser = async (req, res) => {
                 success: false,
                 message: 'Account number (acctNo) is required'
             });
+        }
+
+        let matchedAdmin;
+        try {
+            matchedAdmin = findAdminByEmail(
+                await getAdminsService(userData.userData.acctNo),
+                authenticatedEmail
+            );
+        } catch (error) {
+            return res.status(502).json({ success: false, message: 'Unable to verify account administrator membership' });
+        }
+        if (!matchedAdmin) {
+            return res.status(403).json({ success: false, message: 'Authenticated email is not an administrator of this account' });
         }
 
         const profileImageUrl = userData.userData?.profileImageUrl || '/profile.png';
@@ -383,6 +414,32 @@ export const accountLinkToUser = async (req, res) => {
             return res.status(500).json({
                 success: false,
                 message: 'Failed to create or retrieve account'
+            });
+        }
+
+        const normalizedAdmin = normaliseBotamationAdmin(matchedAdmin);
+        const existingAdmin = normalizedAdmin.chatbotAdminId
+            ? await AccountAdmin.findOne({ acctId, chatbotAdminId: normalizedAdmin.chatbotAdminId })
+            : await AccountAdmin.findOne({ acctId, userId });
+        if (existingAdmin) {
+            existingAdmin.userId = userId;
+            existingAdmin.email = authenticatedEmail;
+            existingAdmin.phone = userData.userData.phone || existingAdmin.phone || null;
+            existingAdmin.firstName = normalizedAdmin.firstName;
+            existingAdmin.lastName = normalizedAdmin.lastName;
+            existingAdmin.profileImage = normalizedAdmin.profileImage;
+            await existingAdmin.save();
+        } else {
+            await AccountAdmin.create({
+                acctId,
+                userId,
+                email: authenticatedEmail,
+                phone: userData.userData.phone || null,
+                chatbotAdminId: normalizedAdmin.chatbotAdminId,
+                firstName: normalizedAdmin.firstName,
+                lastName: normalizedAdmin.lastName,
+                profileImage: normalizedAdmin.profileImage,
+                accessLevel: 'superadmin'
             });
         }
 
@@ -442,7 +499,7 @@ export const accountLinkToUser = async (req, res) => {
  */
 export const getAccountToken = async (req, res) => {
     try {
-        const { acctId } = req.body;
+        const acctId = req.tenant.acctId;
         if (!acctId) {
             return res.status(400).json({ success: false, message: 'acctId is required' });
         }
@@ -489,7 +546,7 @@ export const getAccountToken = async (req, res) => {
  */
 export const regenerateAccountToken = async (req, res) => {
     try {
-        const { acctId } = req.body;
+        const acctId = req.tenant.acctId;
         if (!acctId) {
             return res.status(400).json({ success: false, message: 'acctId is required' });
         }
@@ -525,7 +582,8 @@ export const regenerateAccountToken = async (req, res) => {
  */
 export const deleteAccount = async (req, res) => {
     try {
-        const { acctId, userId } = req.params;
+        const { userId } = req.params;
+        const acctId = req.tenant.acctId;
 
         if (!acctId || !userId) {
             return res.status(400).json({ success: false, message: 'acctId and userId are required' });
@@ -547,17 +605,44 @@ export const deleteAccount = async (req, res) => {
             return res.status(404).json({ success: false, message: 'User is not linked to this account' });
         }
 
-        // Delete UserAccount link
-        await performDelete(UserAccount, { acctId, userId });
-        logger.info('UserAccount link deleted', { acctId, userId, operation: 'deleteUserAccount' });
+        const exports = await LeadExport.find({ acctId, status: 'completed' }).lean();
+        for (const exportDoc of exports) await deleteStoredExport(exportDoc).catch(() => {});
 
-        // Remove the user's admin record for this account (unlink removes admin status)
-        await performDelete(AccountAdmin, { acctId, userId });
+        const collections = await LeadCollection.find({ acctId }, { _id: 1 }).lean();
+        for (const collection of collections) {
+            await collectionService.deleteCollection(acctId, collection._id);
+        }
+
+        // Clean up legacy collection-less leads and any dependents not covered by a collection.
+        while (true) {
+            const leads = await Lead.find({ acctId }, { _id: 1 }).limit(100).lean();
+            if (!leads.length) break;
+            for (const lead of leads) await leadService.deleteLead(lead._id, acctId);
+        }
+        while (true) {
+            const reminders = await LeadReminder.find({ acctId }, { _id: 1 }).limit(200).lean();
+            if (!reminders.length) break;
+            await LeadReminder.updateMany(
+                { acctId, _id: { $in: reminders.map(item => item._id) } },
+                { $set: { mainSent: true, preReminderSent: true, clientSent: true } }
+            );
+            await Promise.allSettled(reminders.map(item => cancelReminderJobs(item._id)));
+            await LeadReminder.deleteMany({ acctId, _id: { $in: reminders.map(item => item._id) } });
+        }
+        await Promise.all([
+            LeadNote.deleteMany({ acctId }),
+            LeadExport.deleteMany({ acctId }),
+            AnalyticsSchema.deleteMany({ acctId }),
+            WebhookConfig.deleteMany({ acctId }),
+            WebhookDelivery.deleteMany({ acctId }),
+            UserAccount.deleteMany({ acctId }),
+            AccountAdmin.deleteMany({ acctId })
+        ]);
         invalidateAdminCache(userId, acctId);
-        logger.info('AccountAdmin record deleted', { acctId, userId, operation: 'deleteAccountAdmin' });
+        logger.info('Tenant data deleted', { acctId, userId, operation: 'deleteTenantData' });
 
         // Delete API keys for this account
-        await performDelete(accountApiKeyModel, { acctId });
+        await accountApiKeyModel.deleteMany({ acctId });
         logger.info('AccountApiKey deleted', { acctId, operation: 'deleteAccountApiKey' });
 
         // Delete the account itself

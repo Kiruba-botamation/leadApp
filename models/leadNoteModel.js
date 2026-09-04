@@ -39,7 +39,8 @@ const leadNoteSchema = new mongoose.Schema(
         description: {
             type: String,
             required: true,
-            trim: true
+            trim: true,
+            maxlength: 10000
         }
     },
     {
@@ -49,7 +50,7 @@ const leadNoteSchema = new mongoose.Schema(
 );
 
 // Primary query: list notes for a lead, latest first
-leadNoteSchema.index({ acctId: 1, leadId: 1, createdAt: -1 });
+leadNoteSchema.index({ acctId: 1, leadId: 1, createdAt: -1, _id: -1 });
 
 // User-scoped queries (e.g. "show all notes by this user")
 leadNoteSchema.index({ acctId: 1, userId: 1 });

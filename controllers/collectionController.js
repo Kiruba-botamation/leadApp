@@ -7,7 +7,7 @@ import collectionService from '../services/collectionService.js';
 class CollectionController {
     /** Shared helper: resolve acctId from request */
     _resolveAcctId(req) {
-        return req.query.acctId || req.headers['x-acctno'] || req.acctId || null;
+        return req.tenant?.acctId || null;
     }
 
     /**

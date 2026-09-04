@@ -2,6 +2,7 @@ import express from 'express';
 import PushSubscription from '../models/pushSubscriptionModel.js';
 import reminderController from '../controllers/reminderController.js';
 import { registerSSEClient, removeSSEClient } from '../services/channels/inApp.js';
+import verifiedTenantMiddleware from '../middleware/verifiedTenantMiddleware.js';
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ const router = express.Router();
 router.get('/fired', reminderController.getFiredReminders.bind(reminderController));
 
 /** Calendar view — all reminders for the current user within a date range */
-router.get('/calendar', reminderController.getCalendarReminders.bind(reminderController));
+router.get('/calendar', verifiedTenantMiddleware, reminderController.getCalendarReminders.bind(reminderController));
 
 /** Mark reminders as read */
 router.post('/mark-read', reminderController.markRead.bind(reminderController));

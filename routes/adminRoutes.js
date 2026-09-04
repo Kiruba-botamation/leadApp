@@ -1,5 +1,6 @@
 import express from 'express';
 import { getAdmins, getAdminsFromDb, updateAccessLevel, updateContact, updateProfile } from '../controllers/adminController.js';
+import { requireSuperadmin } from '../middleware/verifiedTenantMiddleware.js';
 
 const router = express.Router();
 
@@ -16,7 +17,7 @@ router.post('/contact', updateContact);
 /**
  * PATCH /access-level — change an admin's access level (superadmin only)
  */
-router.patch('/access-level', updateAccessLevel);
+router.patch('/access-level', requireSuperadmin, updateAccessLevel);
 
 /**
  * PATCH /profile — update an admin's profile fields (name/email/phone/image).
@@ -27,6 +28,6 @@ router.patch('/profile', updateProfile);
 /**
  * GET / — sync admins against Botamation platform, then return the list
  */
-router.get('/', getAdmins);
+router.get('/', requireSuperadmin, getAdmins);
 
 export default router;

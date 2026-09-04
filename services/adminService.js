@@ -7,6 +7,43 @@ import { invalidateAdminCache } from '../middleware/ssoAuthMiddleware.js';
 import { performGet, performCount, perfomDataExistanceCheck } from '../config/mongoConnector.js';
 import logger from '../utils/logger.js';
 
+export const ADMIN_LIMIT_MAX = 100;
+export const ADMIN_FILTER_MAX = 100;
+export const ADMIN_SORT_FIELDS = new Set([
+    'createdAt', 'updatedAt', 'firstName', 'lastName', 'email', 'phone',
+    'accessLevel', 'chatbotAdminId'
+]);
+const ADMIN_SORT_STORAGE_FIELDS = {
+    firstName: 'firstNameNormalized',
+    lastName: 'lastNameNormalized',
+    email: 'emailNormalized',
+    phone: 'phoneNormalized',
+    chatbotAdminId: 'chatbotAdminIdNormalized'
+};
+const SYNC_BATCH_SIZE = 100;
+const ADMIN_QUERY_MAX_TIME_MS = 10000;
+
+export const escapeRegexLiteral = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export const normalizeAdminFilter = (value, field = 'filter') => {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value !== 'string' || value.length > ADMIN_FILTER_MAX) {
+        const error = new Error(`${field} must be at most ${ADMIN_FILTER_MAX} characters`);
+        error.statusCode = 400;
+        throw error;
+    }
+    const normalized = value.trim().toLowerCase();
+    return normalized ? new RegExp(`^${escapeRegexLiteral(normalized)}`) : null;
+};
+
+export const normalizeAdminListOptions = ({ page, limit, sortBy, sortOrder, includeCount } = {}) => ({
+    page: Math.max(1, Number.parseInt(page, 10) || 1),
+    limit: Math.min(ADMIN_LIMIT_MAX, Math.max(1, Number.parseInt(limit, 10) || 20)),
+    sortBy: ADMIN_SORT_FIELDS.has(sortBy) ? sortBy : 'createdAt',
+    sortOrder: sortOrder === 'asc' ? 1 : -1,
+    includeCount: includeCount !== false && includeCount !== 'false'
+});
+
 /**
  * Resolve acctNo from acctId.
  * Throws if account not found.
@@ -53,27 +90,35 @@ export const syncAdminsFromPlatform = async (acctId) => {
     const externalIds = new Set();
     for (const a of adminList) {
         const n = normaliseBotamationAdmin(a);
-        if (n.chatbotAdminId) externalIds.add(String(n.chatbotAdminId));
+        if (n.chatbotAdminId) externalIds.add(String(n.chatbotAdminId).trim().toLowerCase());
     }
-
-    const existing = await AccountAdmin.find({ acctId }).lean();
 
     let removed = 0;
 
-    // REMOVE — present in the app, gone from Botamation
-    await Promise.all(existing.map(async (admin) => {
-        const id = admin.chatbotAdminId ? String(admin.chatbotAdminId) : null;
-        if (id && externalIds.has(id)) return; // present in both → no update
+    let afterId = null;
+    while (true) {
+        const batchQuery = afterId ? { acctId, _id: { $gt: afterId } } : { acctId };
+        const batch = await AccountAdmin.find(batchQuery)
+            .sort({ _id: 1 })
+            .limit(SYNC_BATCH_SIZE)
+            .lean();
+        if (!batch.length) break;
+        afterId = batch[batch.length - 1]._id;
 
-        await AccountAdmin.deleteOne({ _id: admin._id });
-        if (admin.userId) {
-            await UserAccount.deleteOne({ acctId, userId: admin.userId });
-            // Removed admins leave no dangling lead assignments
-            await leadService.unassignAdminLeads(acctId, admin.userId);
-            invalidateAdminCache(admin.userId, acctId);
+        for (const admin of batch) {
+            const id = admin.chatbotAdminId ? String(admin.chatbotAdminId).trim().toLowerCase() : null;
+            if (id && externalIds.has(id)) continue;
+
+            const deletion = await AccountAdmin.deleteOne({ _id: admin._id, acctId });
+            if (!deletion.deletedCount) continue;
+            if (admin.userId) {
+                await UserAccount.deleteOne({ acctId, userId: admin.userId });
+                await leadService.unassignAdminLeads(acctId, admin.userId);
+                invalidateAdminCache(admin.userId, acctId);
+            }
+            removed += 1;
         }
-        removed += 1;
-    }));
+    }
 
     logger.info('Admins synced to database', { acctId, removed });
 
@@ -83,38 +128,43 @@ export const syncAdminsFromPlatform = async (acctId) => {
 /**
  * Fetch admins for an account from the local DB with optional filtering and pagination.
  */
-export const getAdminsFromDb = async (acctId, { page, limit, sortBy, sortOrder, userId, firstName, lastName, email, phone, accessLevel, chatbotAdminId } = {}) => {
+export const getAdminsFromDb = async (acctId, options = {}) => {
+    const { userId, firstName, lastName, email, phone, accessLevel, chatbotAdminId } = options;
     const query = { acctId };
 
     // Exact-match scoping (used to restrict non-superadmins to their own record)
     if (userId) query.userId = userId;
-    if (firstName) query.firstName = { $regex: firstName, $options: 'i' };
-    if (lastName) query.lastName = { $regex: lastName, $options: 'i' };
-    if (email) query.email = { $regex: email, $options: 'i' };
-    if (phone) query.phone = { $regex: phone, $options: 'i' };
+    const normalizedFilters = {
+        firstNameNormalized: normalizeAdminFilter(firstName, 'firstName'),
+        lastNameNormalized: normalizeAdminFilter(lastName, 'lastName'),
+        emailNormalized: normalizeAdminFilter(email, 'email'),
+        phoneNormalized: normalizeAdminFilter(phone, 'phone'),
+        chatbotAdminIdNormalized: normalizeAdminFilter(chatbotAdminId, 'chatbotAdminId')
+    };
+    for (const [field, regex] of Object.entries(normalizedFilters)) {
+        if (regex) query[field] = regex;
+    }
     if (accessLevel) query.accessLevel = accessLevel;
-    if (chatbotAdminId) query.chatbotAdminId = { $regex: chatbotAdminId, $options: 'i' };
 
-    const pageNum = Math.max(1, parseInt(page) || 1);
-    const limitNum = Math.max(1, parseInt(limit) || 20);
-    const skip = (pageNum - 1) * limitNum;
+    const normalized = normalizeAdminListOptions(options);
+    const skip = (normalized.page - 1) * normalized.limit;
+    const storageSortField = ADMIN_SORT_STORAGE_FIELDS[normalized.sortBy] || normalized.sortBy;
+    const sort = { [storageSortField]: normalized.sortOrder, _id: normalized.sortOrder };
 
-    const sortField = sortBy || 'createdAt';
-    const sortDir = sortOrder === 'asc' ? 1 : -1;
-    const sort = { [sortField]: sortDir };
-
-    const [adminsResult, total] = await Promise.all([
-        performGet(AccountAdmin, query, [], { sort, skip, limit: limitNum }),
-        performCount(AccountAdmin, query)
-    ]);
+    const adminsResult = await performGet(AccountAdmin, query, [], {
+        sort, skip, limit: normalized.limit, maxTimeMS: ADMIN_QUERY_MAX_TIME_MS
+    });
+    const total = normalized.includeCount
+        ? await performCount(AccountAdmin, query, { maxTimeMS: ADMIN_QUERY_MAX_TIME_MS })
+        : null;
 
     return {
         admins: adminsResult.data,
         pagination: {
             total,
-            page: pageNum,
-            limit: limitNum,
-            pages: Math.ceil(total / limitNum)
+            page: normalized.page,
+            limit: normalized.limit,
+            pages: total === null ? null : Math.ceil(total / normalized.limit)
         }
     };
 };
@@ -128,6 +178,8 @@ export const setAdminContact = async (acctId, userId, { email, phone }) => {
     const fields = {};
     if (email !== undefined) fields.email = email;
     if (phone !== undefined) fields.phone = phone;
+    if (email !== undefined) fields.emailNormalized = typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
+    if (phone !== undefined) fields.phoneNormalized = typeof phone === 'string' && phone.trim() ? phone.trim().toLowerCase() : null;
     if (Object.keys(fields).length === 0) return null;
     return AccountAdmin.findOneAndUpdate({ acctId, userId }, { $set: fields }, { new: true }).lean();
 };
@@ -164,6 +216,12 @@ export const setAdminProfile = async (acctId, chatbotAdminId, fields = {}) => {
     const set = {};
     for (const key of allowed) {
         if (fields[key] !== undefined) set[key] = fields[key];
+    }
+    for (const key of ['firstName', 'lastName', 'email', 'phone']) {
+        if (fields[key] !== undefined) {
+            const value = fields[key];
+            set[`${key}Normalized`] = typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+        }
     }
     if (Object.keys(set).length === 0) return null;
     return AccountAdmin.findOneAndUpdate({ acctId, chatbotAdminId }, { $set: set }, { new: true }).lean();

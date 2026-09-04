@@ -1,15 +1,40 @@
 import Lead from '../models/leadModel.js';
 import LeadCollection from '../models/leadCollectionModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
-import { performUpsert, performGet, performDelete, perfomDataExistanceCheck } from '../config/mongoConnector.js';
+import LeadNote from '../models/leadNoteModel.js';
+import LeadReminder from '../models/leadReminderModel.js';
+import { performUpsert } from '../config/mongoConnector.js';
+import { cancelReminderJobs } from '../queue/reminderQueue.js';
 import collectionService, { SYSTEM_FIELDS, STAGE_FIELD } from './collectionService.js';
 import { emitEvent, EVENTS } from './eventBus.js';
+import {
+    assertSafeFieldKey,
+    buildKeysetCondition,
+    decodeLeadCursor,
+    encodeLeadCursor,
+    escapeRegexLiteral,
+    parseFieldFilters,
+    parseLeadLimit
+} from '../utils/leadQueryUtils.js';
 
 /** Sentinel values that mean "clear the responsible / unassign". */
 const UNASSIGNED_VALUES = new Set(['', 'none', 'None', null, undefined]);
 
 /** Fields that are internal / framework-managed and should never be treated as lead data */
 const INTERNAL_FIELDS = new Set(['_id', 'acctId', 'collectionId', '__v', 'createdAt', 'updatedAt', 'collection']);
+const MAX_CREATE_BATCH_SIZE = 1000;
+const MAX_LEAD_FIELDS = 150;
+const MAX_LEAD_DOCUMENT_BYTES = 512 * 1024;
+const MERGE_WRITE_BATCH_SIZE = 100;
+const LEAD_QUERY_MAX_TIME_MS = Number.parseInt(process.env.LEAD_QUERY_MAX_TIME_MS || '5000', 10);
+const MAX_LEGACY_PAGE = 100;
+const MAX_LEGACY_SCAN = 1000;
+
+function requestError(message, statusCode = 400) {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    return error;
+}
 
 class LeadService {
     /**
@@ -53,6 +78,16 @@ class LeadService {
 
         // ── 2. Validate each item in the payload ────────────────────────────
         const items = (Array.isArray(leadData) ? leadData : [leadData]).map(item => ({ ...item }));
+        if (items.length > MAX_CREATE_BATCH_SIZE) {
+            throw requestError(`A lead batch cannot exceed ${MAX_CREATE_BATCH_SIZE} items`);
+        }
+
+        if (mergeProperties !== null) {
+            if (!Array.isArray(mergeProperties) || mergeProperties.length === 0) {
+                throw requestError('merge.properties must be a non-empty array when merge is enabled');
+            }
+            for (const property of mergeProperties) assertSafeFieldKey(property, allowedFields, 'merge property');
+        }
 
         // `responsible` accepts a chatbotAdminId, account-admin _id, or userId.
         // Resolve all three forms to the canonical lead-app userId before storage.
@@ -98,6 +133,9 @@ class LeadService {
         }
 
         for (const item of items) {
+            if (Object.keys(item).length > MAX_LEAD_FIELDS || Buffer.byteLength(JSON.stringify(item)) > MAX_LEAD_DOCUMENT_BYTES) {
+                throw requestError('Lead exceeds the supported field or document size');
+            }
             // Mandatory system fields: "name" and "phone"
             if (!item.name) {
                 const err = new Error('Field "name" is required for all leads.');
@@ -143,29 +181,32 @@ class LeadService {
 
         const buildMergeFilter = (item) => {
             if (!mergeProperties?.length) return {};
-            const filter = { acctId };
-            let found = false;
+            const filter = { acctId, collectionId };
             for (const prop of mergeProperties) {
-                if (prop in item) { filter[prop] = item[prop]; found = true; }
+                if (!Object.hasOwn(item, prop) || item[prop] === undefined) {
+                    throw requestError(`Merge property "${prop}" is required on every lead`);
+                }
+                filter[prop] = item[prop];
             }
-            return found ? filter : {};
+            return filter;
         };
 
         let leadResult;
         if (Array.isArray(leadData)) {
             if (mergeProperties?.length) {
-                const ops = items.map(item => {
-                    const enriched = addMeta({ ...item });
-                    return { updateOne: { filter: buildMergeFilter(item), update: { $set: enriched }, upsert: true } };
-                });
-                await Lead.bulkWrite(ops, { ordered: false });
-                const mergeFilters = items.map(item => buildMergeFilter(item));
-                leadResult = await Lead.find({ $or: mergeFilters }).lean();
+                leadResult = [];
+                for (let start = 0; start < items.length; start += MERGE_WRITE_BATCH_SIZE) {
+                    const batch = items.slice(start, start + MERGE_WRITE_BATCH_SIZE);
+                    const filters = batch.map(buildMergeFilter);
+                    const ops = batch.map((item, index) => ({
+                        updateOne: { filter: filters[index], update: { $set: addMeta(item) }, upsert: true }
+                    }));
+                    await Lead.bulkWrite(ops, { ordered: false });
+                    const docs = await Lead.find({ acctId, collectionId, $or: filters }, null, { maxTimeMS: LEAD_QUERY_MAX_TIME_MS }).lean();
+                    leadResult.push(...docs);
+                }
             } else {
-                const results = await Promise.all(
-                    items.map(item => performUpsert(Lead, {}, addMeta({ ...item })))
-                );
-                leadResult = results.map(r => r.doc);
+                leadResult = await Lead.insertMany(items.map(item => addMeta(item)), { ordered: false });
             }
         } else {
             const item = items[0];
@@ -207,134 +248,166 @@ class LeadService {
             collectionId,
             fieldFilters: fieldFiltersRaw,
             responsibleFilter,
+            cursor: cursorRaw,
+            includeCount = false,
+            requestedFields,
             // Per-admin visibility: superadmins see all leads; everyone else sees
             // only leads assigned to them (responsible === their userId).
             accessLevel,
             userId
         } = filters;
+        if (typeof acctId !== 'string' || !acctId) throw requestError('acctId is required');
+        if (collectionId !== undefined && collectionId !== null && typeof collectionId !== 'string') {
+            throw requestError('collectionId must be a string');
+        }
+        const boundedLimit = parseLeadLimit(limit);
+        const requestedPage = Number(page);
+        if (!Number.isInteger(requestedPage) || requestedPage < 1 || requestedPage > MAX_LEGACY_PAGE) {
+            throw requestError(`page must be an integer between 1 and ${MAX_LEGACY_PAGE}`);
+        }
+        if (cursorRaw && requestedPage !== 1) throw requestError('cursor cannot be combined with page greater than 1');
+        if (!cursorRaw && requestedPage * boundedLimit > MAX_LEGACY_SCAN) {
+            throw requestError(`Legacy page requests are limited to ${MAX_LEGACY_SCAN} traversed leads; use cursor pagination`);
+        }
+
+        let collectionDoc = null;
+        if (collectionId) {
+            collectionDoc = await LeadCollection.findOne({ _id: collectionId, acctId }, { fields: 1 }).lean();
+            if (!collectionDoc) throw requestError('Collection not found', 404);
+        }
+
+        const configuredFields = collectionDoc?.fields || [];
+        const allowedDataFields = new Set([
+            ...SYSTEM_FIELDS.map(field => field.field),
+            STAGE_FIELD.field,
+            ...configuredFields.map(field => field.field)
+        ]);
+        const allowedQueryFields = new Set([...allowedDataFields, 'createdAt', 'updatedAt', '_id']);
+        assertSafeFieldKey(sortBy, allowedQueryFields, 'sort');
+        if (![1, -1].includes(sortOrder)) throw requestError('sortOrder must be asc, desc, 1, or -1');
+
+        const fieldTypes = new Map([
+            ...SYSTEM_FIELDS.map(field => [field.field, field.type]),
+            [STAGE_FIELD.field, 'number'],
+            ...configuredFields.map(field => [field.field, field.type]),
+            ['createdAt', 'date'],
+            ['updatedAt', 'date'],
+            ['_id', 'text']
+        ]);
+        const filterableFields = new Set([...allowedDataFields, 'createdAt', 'updatedAt']);
+        const conditions = [{ acctId }];
+        if (collectionId) conditions.push({ collectionId });
 
         const restrictToOwn = accessLevel !== 'superadmin' && !!userId;
+        if (restrictToOwn) conditions.push({ responsible: userId });
+        else if (accessLevel === 'superadmin' && responsibleFilter) {
+            if (typeof responsibleFilter !== 'string' || responsibleFilter.length > 256) {
+                throw requestError('responsibleFilter must be a string');
+            }
+            conditions.push(responsibleFilter === '__unassigned__'
+                ? { $or: [{ responsible: { $exists: false } }, { responsible: null }, { responsible: '' }] }
+                : { responsible: responsibleFilter });
+        }
 
-        const query = { acctId };
-        if (collectionId) query.collectionId = collectionId;
-        if (restrictToOwn) {
-            query.responsible = userId;
-        } else if (accessLevel === 'superadmin' && responsibleFilter) {
-            if (responsibleFilter === '__unassigned__') {
-                query.$or = [{ responsible: { $exists: false } }, { responsible: null }, { responsible: '' }];
-            } else {
-                query.responsible = responsibleFilter;
+        const typedFilters = parseFieldFilters(fieldFiltersRaw, filterableFields, fieldTypes);
+        for (const [key, value] of Object.entries(typedFilters)) conditions.push({ [key]: value });
+
+        if (search !== undefined && search !== null && search !== '') {
+            const escapedSearch = escapeRegexLiteral(search, 'search');
+            const stringFields = [...fieldTypes.entries()]
+                .filter(([field, type]) => type === 'text' && !['_id', 'responsible'].includes(field))
+                .map(([field]) => field);
+            if (stringFields.length) {
+                // Atlas Search is deferred until an Atlas index and tenant-aware search mapping are deployed.
+                conditions.push({ $or: stringFields.map(field => ({ [field]: { $regex: escapedSearch, $options: 'i' } })) });
             }
         }
 
-        // ── Parse and apply typed field filters ─────────────────────────────
-        if (fieldFiltersRaw) {
-            let parsed = {};
-            try { parsed = JSON.parse(fieldFiltersRaw); } catch { /* invalid JSON — ignore */ }
+        const selectedFields = requestedFields
+            ? String(requestedFields).split(',').map(field => field.trim()).filter(Boolean)
+            : [...allowedDataFields];
+        if (requestedFields && selectedFields.length === 0) throw requestError('fields must contain at least one field');
+        for (const field of selectedFields) assertSafeFieldKey(field, allowedDataFields, 'projection');
+        const projection = Object.fromEntries([
+            ...selectedFields,
+            '_id', 'acctId', 'collectionId', 'createdAt', 'updatedAt', 'responsible', sortBy
+        ].map(field => [field, 1]));
 
-            for (const [key, filterDef] of Object.entries(parsed)) {
-                if (!filterDef || INTERNAL_FIELDS.has(key)) continue;
-                const condition = this._buildFilterCondition(filterDef);
-                if (condition !== null) query[key] = condition;
-            }
+        let decodedCursor = cursorRaw ? decodeLeadCursor(cursorRaw, { sortBy, sortOrder }) : null;
+        if (decodedCursor && ['createdAt', 'updatedAt'].includes(sortBy) && decodedCursor.value !== null) {
+            const date = new Date(decodedCursor.value);
+            if (Number.isNaN(date.getTime())) throw requestError('Invalid cursor');
+            decodedCursor = { ...decodedCursor, value: date };
         }
 
-        // ── Global text search across string fields ──────────────────────────
-        if (search) {
-            const scopeConditions = [{ acctId }];
-            if (collectionId) scopeConditions.push({ collectionId });
-            if (restrictToOwn) scopeConditions.push({ responsible: userId });
-            else if (accessLevel === 'superadmin' && responsibleFilter) {
-                if (responsibleFilter === '__unassigned__') {
-                    scopeConditions.push({ $or: [{ responsible: { $exists: false } }, { responsible: null }, { responsible: '' }] });
-                } else {
-                    scopeConditions.push({ responsible: responsibleFilter });
+        let rows = [];
+        let hasNextPage = false;
+        let pageCursor = decodedCursor;
+        const iterations = cursorRaw ? 1 : requestedPage;
+        for (let iteration = 1; iteration <= iterations; iteration += 1) {
+            const pageConditions = pageCursor
+                ? [...conditions, buildKeysetCondition(sortBy, sortOrder, pageCursor)]
+                : conditions;
+            const found = await Lead.find({ $and: pageConditions }, projection)
+                .sort({ [sortBy]: sortOrder, _id: sortOrder })
+                .limit(boundedLimit + 1)
+                .maxTimeMS(LEAD_QUERY_MAX_TIME_MS)
+                .lean();
+            hasNextPage = found.length > boundedLimit;
+            rows = found.slice(0, boundedLimit);
+            if (iteration < iterations) {
+                if (!hasNextPage || rows.length === 0) {
+                    rows = [];
+                    hasNextPage = false;
+                    break;
                 }
+                const last = rows.at(-1);
+                pageCursor = { value: last[sortBy] ?? null, id: String(last._id) };
             }
-            const stringFields = Object.keys(Lead.schema.paths).filter(
-                k => Lead.schema.paths[k].instance === 'String' && !['_id', 'acctId', 'responsible'].includes(k)
-            );
-            const searchConditions = stringFields.map(field => ({ [field]: { $regex: search, $options: 'i' } }));
-            query.$and = [...scopeConditions, { $or: searchConditions }];
-            delete query.acctId;
-            delete query.collectionId;
-            delete query.responsible;
         }
 
-        const skip = (page - 1) * limit;
-        const sort = { [sortBy]: sortOrder };
+        const responsibleIds = [...new Set(rows.map(row => row.responsible).filter(Boolean))];
+        const admins = responsibleIds.length
+            ? await AccountAdmin.find({ acctId, userId: { $in: responsibleIds } }, { userId: 1, firstName: 1, lastName: 1, profileImage: 1 })
+                .maxTimeMS(LEAD_QUERY_MAX_TIME_MS).lean()
+            : [];
+        const adminByUserId = new Map(admins.map(admin => [String(admin.userId), admin]));
+        rows = rows.map(row => {
+            if (!row.responsible) return { ...row, adminName: null, adminProfileImage: null };
+            const admin = adminByUserId.get(String(row.responsible));
+            const name = admin ? `${admin.firstName || ''} ${admin.lastName || ''}`.trim() : '';
+            return { ...row, adminName: name || 'Unknown', adminProfileImage: admin?.profileImage || null };
+        });
 
-        // Single $facet aggregation: data + total in one round-trip
-        const pipeline = [
-            { $match: query },
-            {
-                $facet: {
-                    data: [
-                        { $sort: sort },
-                        { $skip: skip },
-                        { $limit: limit },
-                        {
-                            $lookup: {
-                                from:         'account_admins',
-                                localField:   'responsible',
-                                foreignField: 'userId',
-                                as:           '_adminArr'
-                            }
-                        },
-                        {
-                            $addFields: {
-                                adminName: {
-                                    $let: {
-                                        vars: {
-                                            fn: { $ifNull: [{ $arrayElemAt: ['$_adminArr.firstName', 0] }, ''] },
-                                            ln: { $ifNull: [{ $arrayElemAt: ['$_adminArr.lastName', 0] }, ''] }
-                                        },
-                                        in: {
-                                            $cond: {
-                                                if:   { $or: [{ $ne: ['$$fn', ''] }, { $ne: ['$$ln', ''] }] },
-                                                then: { $trim: { input: { $concat: ['$$fn', ' ', '$$ln'] } } },
-                                                else: { $cond: [{ $ifNull: ['$responsible', false] }, 'Unknown', null] }
-                                            }
-                                        }
-                                    }
-                                },
-                                adminProfileImage: { $arrayElemAt: ['$_adminArr.profileImage', 0] }
-                            }
-                        },
-                        { $project: { _adminArr: 0 } }
-                    ],
-                    total: [{ $count: 'count' }]
-                }
-            }
-        ];
-
-        const [aggResult] = await Lead.aggregate(pipeline).option({ allowDiskUse: true });
-
-        // Expose the collection's field keys (system + stage + user-defined) so the
-        // analytics axis pickers have a source of truth. Account-wide view (no
-        // collectionId) falls back to system fields + stage only.
-        let fields = [...SYSTEM_FIELDS.map(f => f.field), STAGE_FIELD.field];
-        if (collectionId) {
-            const col = await LeadCollection.findOne({ _id: collectionId, acctId }, { fields: 1 }).lean();
-            if (col) fields = [...SYSTEM_FIELDS.map(f => f.field), STAGE_FIELD.field, ...(col.fields || []).map(f => f.field)];
-        }
+        const last = rows.at(-1);
+        const nextCursor = hasNextPage && last
+            ? encodeLeadCursor({ sortBy, sortOrder, value: last[sortBy] ?? null, id: String(last._id) })
+            : null;
+        const total = includeCount
+            ? await Lead.countDocuments({ $and: conditions }).maxTimeMS(LEAD_QUERY_MAX_TIME_MS)
+            : null;
 
         return {
-            data: aggResult?.data ?? [],
-            fields,
+            data: rows,
+            fields: [...allowedDataFields],
+            pageInfo: {
+                hasNextPage,
+                hasPreviousPage: Boolean(cursorRaw) || requestedPage > 1,
+                nextCursor
+            },
             pagination: {
-                total: aggResult?.total?.[0]?.count ?? 0,
-                page,
-                limit,
-                pages: Math.ceil((aggResult?.total?.[0]?.count ?? 0) / limit)
+                total,
+                page: requestedPage,
+                limit: boundedLimit,
+                pages: total === null ? null : Math.ceil(total / boundedLimit)
             }
         };
     }
 
     /** Get a single lead by _id */
-    async getLeadById(id) {
-        const result = await performGet(Lead, { _id: id });
-        return result?.data?.[0] || null;
+    async getLeadById(id, acctId) {
+        if (!acctId) throw requestError('acctId is required');
+        return Lead.findOne({ _id: id, acctId }).maxTimeMS(LEAD_QUERY_MAX_TIME_MS).lean();
     }
 
     /**
@@ -352,13 +425,28 @@ class LeadService {
     async updateLead(id, updateData, context = {}) {
         const { acctId, prevResponsible = null, prevStage = null, collectionId = null } = context;
         const data = { ...updateData };
+        if (!acctId || !collectionId) throw requestError('Account and collection context are required');
+        if (Object.keys(data).length > MAX_LEAD_FIELDS || Buffer.byteLength(JSON.stringify(data)) > MAX_LEAD_DOCUMENT_BYTES) {
+            throw requestError('Lead update exceeds the supported field or document size');
+        }
+        const collectionDoc = await LeadCollection.findOne({ _id: collectionId, acctId }, { fields: 1, stages: 1 }).lean();
+        if (!collectionDoc) throw requestError('Collection not found', 404);
+        const allowedUpdateFields = new Set([
+            ...SYSTEM_FIELDS.map(field => field.field),
+            STAGE_FIELD.field,
+            ...(collectionDoc.fields || []).map(field => field.field)
+        ]);
+        for (const key of Object.keys(data)) assertSafeFieldKey(key, allowedUpdateFields, 'update field');
 
         const hasResponsible = Object.prototype.hasOwnProperty.call(data, 'responsible');
         const unassigning = hasResponsible && UNASSIGNED_VALUES.has(data.responsible);
         let nextResponsible = null;
 
         if (hasResponsible && !unassigning) {
-            nextResponsible = data.responsible;
+            const admin = await AccountAdmin.findOne({ acctId, userId: data.responsible }, { userId: 1 }).lean();
+            if (!admin) throw requestError('Responsible admin does not belong to this account');
+            nextResponsible = admin.userId;
+            data.responsible = admin.userId;
         }
 
         // Stage transition detection. Coerce to Number so leads store a numeric
@@ -368,6 +456,9 @@ class LeadService {
         let   nextStageNum = null;
         if (hasStage) {
             nextStageNum = (data.stage === null || data.stage === undefined || data.stage === '') ? null : Number(data.stage);
+            if (nextStageNum !== null && !(collectionDoc.stages || []).some(stage => stage.id === nextStageNum)) {
+                throw requestError('Unknown stage for this collection');
+            }
             if (nextStageNum !== null) data.stage = nextStageNum;
         }
 
@@ -375,13 +466,12 @@ class LeadService {
         if (unassigning) {
             delete data.responsible;
             doc = await Lead.findOneAndUpdate(
-                { _id: id },
+                { _id: id, acctId },
                 { $set: data, $unset: { responsible: '', responsibleName: '', responsibleProfileImage: '' } },
                 { new: true }
             ).lean();
         } else {
-            const result = await performUpsert(Lead, { _id: id }, data);
-            doc = result.doc || null;
+            doc = await Lead.findOneAndUpdate({ _id: id, acctId }, { $set: data }, { new: true }).lean();
         }
 
         // Collection the lead belongs to — webhooks are scoped per collection.
@@ -415,9 +505,25 @@ class LeadService {
     }
 
     /** Delete a lead by _id */
-    async deleteLead(id) {
-        await performDelete(Lead, { _id: id });
-        return true;
+    async deleteLead(id, acctId) {
+        if (!acctId) throw requestError('acctId is required');
+        while (true) {
+            const reminders = await LeadReminder.find({ acctId, leadId: id }, { _id: 1 })
+                .limit(200)
+                .maxTimeMS(LEAD_QUERY_MAX_TIME_MS)
+                .lean();
+            if (!reminders.length) break;
+            const reminderIds = reminders.map(reminder => reminder._id);
+            await LeadReminder.updateMany(
+                { acctId, leadId: id, _id: { $in: reminderIds } },
+                { $set: { mainSent: true, preReminderSent: true, clientSent: true, jobScheduled: false, clientJobScheduled: false } }
+            );
+            await Promise.allSettled(reminderIds.map(reminderId => cancelReminderJobs(reminderId)));
+            await LeadReminder.deleteMany({ acctId, leadId: id, _id: { $in: reminderIds } });
+        }
+        await LeadNote.deleteMany({ acctId, leadId: id });
+        const result = await Lead.deleteOne({ _id: id, acctId });
+        return result.deletedCount === 1;
     }
 
     /**
@@ -434,20 +540,24 @@ class LeadService {
      */
     async unassignAdminLeads(acctId, userId) {
         if (!acctId || !userId) return 0;
-
-        const affected = await Lead.find({ acctId, responsible: userId }, { _id: 1, collectionId: 1 }).lean();
-        if (affected.length === 0) return 0;
-
-        await Lead.updateMany(
-            { acctId, responsible: userId },
-            { $unset: { responsible: '', responsibleName: '', responsibleProfileImage: '' } }
-        );
-
-        for (const lead of affected) {
-            emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, collectionId: lead.collectionId ?? null, data: { leadId: lead._id, previous: userId, lead: null } });
+        let total = 0;
+        while (true) {
+            const affected = await Lead.find(
+                { acctId, responsible: userId },
+                { _id: 1, collectionId: 1 }
+            ).limit(200).maxTimeMS(LEAD_QUERY_MAX_TIME_MS).lean();
+            if (!affected.length) break;
+            const ids = affected.map(lead => lead._id);
+            await Lead.updateMany(
+                { acctId, responsible: userId, _id: { $in: ids } },
+                { $unset: { responsible: '', responsibleName: '', responsibleProfileImage: '' } }
+            );
+            total += affected.length;
+            for (const lead of affected) {
+                emitEvent(EVENTS.LEAD_UNASSIGNED, { acctId, collectionId: lead.collectionId ?? null, data: { leadId: lead._id, previous: userId, lead: null } });
+            }
         }
-
-        return affected.length;
+        return total;
     }
 
     /**
@@ -468,75 +578,27 @@ class LeadService {
     async reassignAdminLeads(acctId, fromUserId, toUserId, snapshot = {}) {
         if (!acctId || !fromUserId || !toUserId || String(fromUserId) === String(toUserId)) return 0;
 
-        const affected = await Lead.find({ acctId, responsible: fromUserId }, { _id: 1, collectionId: 1 }).lean();
-        if (affected.length === 0) return 0;
-
         const set = { responsible: toUserId };
         if (snapshot.name !== undefined) set.responsibleName = snapshot.name;
         if (snapshot.profileImage !== undefined) set.responsibleProfileImage = snapshot.profileImage;
 
-        await Lead.updateMany({ acctId, responsible: fromUserId }, { $set: set });
-
-        for (const lead of affected) {
-            emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, collectionId: lead.collectionId ?? null, data: { leadId: lead._id, responsible: toUserId, previous: fromUserId, lead: null } });
+        let total = 0;
+        while (true) {
+            const affected = await Lead.find(
+                { acctId, responsible: fromUserId },
+                { _id: 1, collectionId: 1 }
+            ).limit(200).maxTimeMS(LEAD_QUERY_MAX_TIME_MS).lean();
+            if (!affected.length) break;
+            const ids = affected.map(lead => lead._id);
+            await Lead.updateMany({ acctId, responsible: fromUserId, _id: { $in: ids } }, { $set: set });
+            total += affected.length;
+            for (const lead of affected) {
+                emitEvent(EVENTS.LEAD_ASSIGNED, { acctId, collectionId: lead.collectionId ?? null, data: { leadId: lead._id, responsible: toUserId, previous: fromUserId, lead: null } });
+            }
         }
-
-        return affected.length;
+        return total;
     }
 
-    // ── Private helpers ──────────────────────────────────────────────────────
-
-    /**
-     * Convert a typed filter definition to a MongoDB query condition.
-     * Returns null when there is no meaningful filter to apply.
-     */
-    _buildFilterCondition(filterDef) {
-        const { type, value, op, min, max, from, to } = filterDef;
-
-        switch (type) {
-            case 'text': {
-                if (!value && value !== 0) return null;
-                return { $regex: String(value), $options: 'i' };
-            }
-
-            case 'number': {
-                if (op === 'between') {
-                    const lo = parseFloat(min);
-                    const hi = parseFloat(max);
-                    if (isNaN(lo) && isNaN(hi)) return null;
-                    const cond = {};
-                    if (!isNaN(lo)) cond.$gte = lo;
-                    if (!isNaN(hi)) cond.$lte = hi;
-                    return cond;
-                }
-                const num = parseFloat(value);
-                if (isNaN(num)) return null;
-                const opMap = { eq: '$eq', ne: '$ne', gt: '$gt', gte: '$gte', lt: '$lt', lte: '$lte' };
-                const mongoOp = opMap[op] || '$eq';
-                return { [mongoOp]: num };
-            }
-
-            case 'date': {
-                const cond = {};
-                if (from) cond.$gte = new Date(from);
-                if (to) {
-                    // Include the full "to" day
-                    const toDate = new Date(to);
-                    toDate.setHours(23, 59, 59, 999);
-                    cond.$lte = toDate;
-                }
-                return Object.keys(cond).length > 0 ? cond : null;
-            }
-
-            case 'boolean': {
-                if (value === undefined || value === null || value === '') return null;
-                return value === true || value === 'true';
-            }
-
-            default:
-                return null;
-        }
-    }
 }
 
 export default new LeadService();

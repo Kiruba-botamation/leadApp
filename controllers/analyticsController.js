@@ -7,10 +7,12 @@ class AnalyticsController {
    */
   async saveSchema(req, res) {
     try {
-      const { userId, acctId, schema } = req.body;
+      const { schema } = req.body;
+      const userId = req.user.userId;
+      const acctId = req.tenant.acctId;
 
-      if (!userId || !acctId || !schema) {
-        return res.status(400).json({ success: false, message: 'userId, acctId, and schema are required' });
+      if (!schema) {
+        return res.status(400).json({ success: false, message: 'schema is required' });
       }
 
       const result = await analyticsService.saveSchema({ userId, acctId, schema });
@@ -28,15 +30,15 @@ class AnalyticsController {
    */
   async getSchema(req, res) {
     try {
-      const { userId, acctId, viewingAs, selectedUserId } = req.query;
-
-      if (!acctId) {
-        return res.status(400).json({ success: false, message: 'acctId is required' });
-      }
+      const { viewingAs, selectedUserId } = req.query;
+      const acctId = req.tenant.acctId;
 
       // Schemas are keyed by userId. In view-as mode, selectedUserId/viewingAs is
       // the target user's userId; otherwise load the caller's own schema.
-      const effectiveUserId = selectedUserId || viewingAs || userId;
+      const requestedUserId = selectedUserId || viewingAs;
+      const effectiveUserId = req.user.accessLevel === 'superadmin' && requestedUserId
+        ? requestedUserId
+        : req.user.userId;
 
       const result = effectiveUserId
         ? await analyticsService.getSchema({ userId: effectiveUserId, acctId })
@@ -55,12 +57,13 @@ class AnalyticsController {
    */
   async viewAs(req, res) {
     try {
-      const { acctId, userId, selectedUserId } = req.body;
+      const { selectedUserId } = req.body;
+      const acctId = req.tenant.acctId;
 
-      if (!acctId || !userId || !selectedUserId) {
+      if (!selectedUserId) {
         return res.status(400).json({
           success: false,
-          message: 'acctId, userId, and selectedUserId are required'
+          message: 'selectedUserId is required'
         });
       }
 
@@ -86,10 +89,8 @@ class AnalyticsController {
     try {
       // Support both POST (body) and GET (query params)
       const source = req.body && Object.keys(req.body).length ? req.body : req.query;
-      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, dateFilterField, collectionId, acctId: acctIdSource, dateGranularity } = source;
-
-      // acctId always comes from the request (query/body) — never from req.user
-      const acctId = acctIdSource || req.headers['x-acctno'];
+      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, dateFilterField, collectionId, dateGranularity } = source;
+      const acctId = req.tenant?.acctId;
       if (!acctId) {
         return res.status(403).json({
           success: false,

@@ -1,13 +1,14 @@
 /**
- * account_admins: global-uniqueness index migration
+ * account_admins: tenant-scoped index migration
  *
- * Enforces that `userId`, `email`, and `chatbotAdminId` are each unique across the
- * ENTIRE collection — no value may appear in two documents in any combination.
+ * Allows the same person to administer multiple accounts while enforcing identity
+ * uniqueness within each account. Also backfills lowercase fields used by literal
+ * filters so roster queries remain account-indexed.
  *
  * Indexes created (matches accountAdminModel.js):
- *   1. { userId }         — unique
- *   2. { email }          — unique PARTIAL (only when email is a string; nulls exempt)
- *   3. { chatbotAdminId } — unique PARTIAL (only when chatbotAdminId is a string)
+ *   1. { acctId, userId }                    — unique
+ *   2. { acctId, emailNormalized }           — unique partial
+ *   3. { acctId, chatbotAdminIdNormalized }  — unique partial
  *
  * Drops the legacy per-account compound indexes and the non-unique userId index,
  * since MongoDB will not change an existing index's options in place
@@ -32,20 +33,20 @@ dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 const DB_NAME   = process.env.MONGO_DB_NAME || 'leadapp';
 
-// Legacy / superseded index names to drop before creating the global ones
+// Legacy / superseded index names to drop before creating tenant-scoped ones
 const LEGACY_INDEXES = [
     'acctId_1_userId_1',
     'acctId_1_chatbotAdminId_1',
-    'userId_1',          // recreated as unique below
+    'userId_1',
     'email_1',
     'chatbotAdminId_1',
 ];
 
-// Report any value shared by more than one document for a given field.
+// Report any value shared within an account for a given field.
 async function findDuplicates(coll, field) {
     const dups = await coll.aggregate([
         { $match: { [field]: { $type: 'string' } } },
-        { $group: { _id: `$${field}`, count: { $sum: 1 }, ids: { $push: '$_id' } } },
+        { $group: { _id: { acctId: '$acctId', value: `$${field}` }, count: { $sum: 1 }, ids: { $push: '$_id' } } },
         { $match: { count: { $gt: 1 } } },
     ]).toArray();
     return dups;
@@ -57,9 +58,32 @@ async function migrate() {
 
     const coll = mongoose.connection.collection('account_admins');
 
+    const normalizeExpression = field => ({
+        $let: {
+            vars: {
+                normalized: {
+                    $cond: [
+                        { $eq: [{ $type: `$${field}` }, 'string'] },
+                        { $toLower: { $trim: { input: `$${field}` } } },
+                        ''
+                    ]
+                }
+            },
+            in: { $cond: [{ $eq: ['$$normalized', ''] }, null, '$$normalized'] }
+        }
+    });
+    await coll.updateMany({}, [{ $set: {
+        firstNameNormalized: normalizeExpression('firstName'),
+        lastNameNormalized: normalizeExpression('lastName'),
+        emailNormalized: normalizeExpression('email'),
+        phoneNormalized: normalizeExpression('phone'),
+        chatbotAdminIdNormalized: normalizeExpression('chatbotAdminId')
+    } }]);
+    console.log('[migrate] Backfilled normalized admin fields');
+
     // 1) Pre-flight duplicate scan — abort cleanly if the data can't satisfy the constraint
     let blocked = false;
-    for (const field of ['userId', 'email', 'chatbotAdminId']) {
+    for (const field of ['userId', 'emailNormalized', 'chatbotAdminIdNormalized']) {
         const dups = await findDuplicates(coll, field);
         if (dups.length) {
             blocked = true;
@@ -85,21 +109,27 @@ async function migrate() {
         }
     }
 
-    // 3) Create the global-uniqueness indexes
-    await coll.createIndex({ userId: 1 }, { unique: true });
-    console.log('[migrate] Created unique index on { userId }');
+    // 3) Create tenant-leading query and uniqueness indexes
+    await coll.createIndex({ acctId: 1, createdAt: -1, _id: -1 });
+    await coll.createIndex({ acctId: 1, updatedAt: -1, _id: -1 });
+    await coll.createIndex({ acctId: 1, userId: 1 }, { unique: true });
+    await coll.createIndex({ acctId: 1, firstNameNormalized: 1, _id: 1 });
+    await coll.createIndex({ acctId: 1, lastNameNormalized: 1, _id: 1 });
+    await coll.createIndex({ acctId: 1, phoneNormalized: 1, _id: 1 });
+    await coll.createIndex({ acctId: 1, accessLevel: 1, _id: 1 });
+    console.log('[migrate] Created account-leading admin indexes');
 
     await coll.createIndex(
-        { email: 1 },
-        { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+        { acctId: 1, emailNormalized: 1 },
+        { unique: true, partialFilterExpression: { emailNormalized: { $type: 'string' } } }
     );
-    console.log('[migrate] Created partial unique index on { email }');
+    console.log('[migrate] Created partial unique index on { acctId, emailNormalized }');
 
     await coll.createIndex(
-        { chatbotAdminId: 1 },
-        { unique: true, partialFilterExpression: { chatbotAdminId: { $type: 'string' } } }
+        { acctId: 1, chatbotAdminIdNormalized: 1 },
+        { unique: true, partialFilterExpression: { chatbotAdminIdNormalized: { $type: 'string' } } }
     );
-    console.log('[migrate] Created partial unique index on { chatbotAdminId }');
+    console.log('[migrate] Created partial unique index on { acctId, chatbotAdminIdNormalized }');
 
     await mongoose.disconnect();
     console.log('[migrate] Done.');

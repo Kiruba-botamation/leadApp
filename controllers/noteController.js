@@ -20,11 +20,20 @@ class NoteController {
 
             if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
 
-            const notes = await noteService.getNotes(acctId, leadId);
-            return res.status(200).json({ success: true, data: notes });
+            const result = await noteService.getNotes(acctId, leadId, {
+                cursor: req.query.cursor,
+                limit: req.query.limit,
+            });
+            return res.status(200).json({
+                success: true,
+                data: result.items,
+                nextCursor: result.nextCursor,
+                hasMore: result.hasMore,
+                limit: result.limit,
+            });
         } catch (err) {
             console.error('[NoteController] getNotes:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -42,7 +51,7 @@ class NoteController {
 
             if (!acctId)      return res.status(400).json({ success: false, message: 'Account context required' });
             if (!userId)      return res.status(400).json({ success: false, message: 'User identity required' });
-            if (!description?.trim()) {
+            if (typeof description !== 'string' || !description.trim()) {
                 return res.status(400).json({ success: false, message: 'description is required' });
             }
 
@@ -50,7 +59,7 @@ class NoteController {
             return res.status(201).json({ success: true, message: 'Note created', data: note });
         } catch (err) {
             console.error('[NoteController] createNote:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -61,18 +70,19 @@ class NoteController {
      */
     async updateNote(req, res) {
         try {
-            const { noteId }    = req.params;
+            const { leadId, noteId } = req.params;
             const userId        = req.user?.userId;
             const acctId        = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
             const isSuperadmin  = req.user?.accessLevel === 'superadmin';
             const { description } = req.body;
 
+            if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
-            if (!description?.trim()) {
+            if (typeof description !== 'string' || !description.trim()) {
                 return res.status(400).json({ success: false, message: 'description is required' });
             }
 
-            const updated = await noteService.updateNote(noteId, userId, description.trim(), { isSuperadmin, acctId });
+            const updated = await noteService.updateNote(acctId, leadId, noteId, userId, description.trim(), { isSuperadmin });
             if (!updated) {
                 return res.status(404).json({ success: false, message: 'Note not found or you do not have permission to edit it' });
             }
@@ -80,7 +90,7 @@ class NoteController {
             return res.status(200).json({ success: true, message: 'Note updated', data: updated });
         } catch (err) {
             console.error('[NoteController] updateNote:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -90,14 +100,15 @@ class NoteController {
      */
     async deleteNote(req, res) {
         try {
-            const { noteId } = req.params;
+            const { leadId, noteId } = req.params;
             const userId     = req.user?.userId;
             const acctId     = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
             const isSuperadmin = req.user?.accessLevel === 'superadmin';
 
+            if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
-            const deleted = await noteService.deleteNote(noteId, userId, { isSuperadmin, acctId });
+            const deleted = await noteService.deleteNote(acctId, leadId, noteId, userId, { isSuperadmin });
             if (!deleted) {
                 return res.status(404).json({ success: false, message: 'Note not found or you do not have permission to delete it' });
             }
@@ -105,7 +116,7 @@ class NoteController {
             return res.status(200).json({ success: true, message: 'Note deleted' });
         } catch (err) {
             console.error('[NoteController] deleteNote:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -128,7 +139,7 @@ class NoteController {
             return res.status(200).json({ success: true, data: counts });
         } catch (err) {
             console.error('[NoteController] getBatchCounts:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 
@@ -155,7 +166,7 @@ class NoteController {
             return res.status(200).json({ success: true, data: { notes, reminders } });
         } catch (err) {
             console.error('[NoteController] getCombinedBatchCounts:', err);
-            return res.status(500).json({ success: false, message: err.message });
+            return res.status(err.status || 500).json({ success: false, message: err.message });
         }
     }
 }

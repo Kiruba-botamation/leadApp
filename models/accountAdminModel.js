@@ -13,8 +13,8 @@ import mongoose from 'mongoose';
  * All downstream references (lead `responsible`, notes, reminders, analytics) key
  * off `userId`.
  *
- * Global uniqueness: `userId`, `email`, and `chatbotAdminId` are each unique across
- * the ENTIRE collection — no value may appear in two documents (see indexes below).
+ * Identity is account-scoped. A user or external admin may belong to multiple
+ * accounts, but each normalized identity may occur only once within an account.
  */
 const accountAdminSchema = new mongoose.Schema(
     {
@@ -67,28 +67,47 @@ const accountAdminSchema = new mongoose.Schema(
         accessLevel: {
             type: String,
             default: 'superadmin'
-        }
+        },
+        firstNameNormalized: { type: String, default: null, select: false },
+        lastNameNormalized: { type: String, default: null, select: false },
+        emailNormalized: { type: String, default: null, select: false },
+        phoneNormalized: { type: String, default: null, select: false },
+        chatbotAdminIdNormalized: { type: String, default: null, select: false }
     },
     { timestamps: true, collection: 'account_admins' }
 );
 
-// Global uniqueness — a given userId / email / chatbotAdminId may appear in at
-// most ONE document across the entire collection. No value may be shared by two
-// documents in any combination. (This also implies one admin record per user.)
-//
-// The userId index doubles as the lead-enrichment lookup
-// ($lookup leads.responsible → account_admins.userId).
-accountAdminSchema.index({ userId: 1 }, {});
+const normalize = value => typeof value === 'string' && value.trim()
+    ? value.trim().toLowerCase()
+    : null;
+
+accountAdminSchema.pre('validate', function setNormalizedAdminFields(next) {
+    this.firstNameNormalized = normalize(this.firstName);
+    this.lastNameNormalized = normalize(this.lastName);
+    this.emailNormalized = normalize(this.email);
+    this.phoneNormalized = normalize(this.phone);
+    this.chatbotAdminIdNormalized = normalize(this.chatbotAdminId);
+    next();
+});
+
+// Every operational query is tenant-scoped, so account is the leading key.
+accountAdminSchema.index({ acctId: 1, createdAt: -1, _id: -1 });
+accountAdminSchema.index({ acctId: 1, updatedAt: -1, _id: -1 });
+accountAdminSchema.index({ acctId: 1, userId: 1 }, { unique: true });
+accountAdminSchema.index({ acctId: 1, firstNameNormalized: 1, _id: 1 });
+accountAdminSchema.index({ acctId: 1, lastNameNormalized: 1, _id: 1 });
+accountAdminSchema.index({ acctId: 1, phoneNormalized: 1, _id: 1 });
+accountAdminSchema.index({ acctId: 1, accessLevel: 1, _id: 1 });
 
 // email / chatbotAdminId are optional — partial so missing (null) values are
 // exempt from the constraint (only real string values must be unique).
 accountAdminSchema.index(
-    { email: 1 },
-    { partialFilterExpression: { email: { $type: 'string' } } }
+    { acctId: 1, emailNormalized: 1 },
+    { unique: true, partialFilterExpression: { emailNormalized: { $type: 'string' } } }
 );
 accountAdminSchema.index(
-    { chatbotAdminId: 1 },
-    { partialFilterExpression: { chatbotAdminId: { $type: 'string' } } }
+    { acctId: 1, chatbotAdminIdNormalized: 1 },
+    { unique: true, partialFilterExpression: { chatbotAdminIdNormalized: { $type: 'string' } } }
 );
 
 const AccountAdmin = mongoose.model('AccountAdmin', accountAdminSchema);

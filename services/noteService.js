@@ -6,7 +6,46 @@
  */
 import LeadNote     from '../models/leadNoteModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
+import Lead          from '../models/leadModel.js';
 import logger from '../utils/logger.js';
+
+export const NOTE_MAX_LENGTH = 10000;
+export const ACTIVITY_BATCH_MAX = 200;
+const NOTE_LIST_DEFAULT = 50;
+const NOTE_LIST_MAX = 100;
+
+const serviceError = (message, status = 400) => Object.assign(new Error(message), { status });
+
+const encodeCursor = (note) => Buffer.from(JSON.stringify({
+    createdAt: note.createdAt,
+    id: note._id,
+})).toString('base64url');
+
+const decodeCursor = (cursor) => {
+    if (!cursor) return null;
+    if (typeof cursor !== 'string' || cursor.length > 1024) throw serviceError('Invalid notes cursor');
+    try {
+        const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+        const createdAt = new Date(parsed.createdAt);
+        if (!parsed.id || Number.isNaN(createdAt.getTime())) throw new Error('invalid');
+        return { createdAt, id: String(parsed.id) };
+    } catch {
+        throw serviceError('Invalid notes cursor');
+    }
+};
+
+const normalizeBatchIds = (leadIds) => {
+    if (leadIds.length > ACTIVITY_BATCH_MAX) throw serviceError(`leadIds is limited to ${ACTIVITY_BATCH_MAX}`);
+    if (leadIds.some(id => typeof id !== 'string' || !id.trim() || id.length > 128)) {
+        throw serviceError('leadIds must contain non-empty strings of at most 128 characters');
+    }
+    return [...new Set(leadIds)];
+};
+
+const assertTenantLead = async (acctId, leadId) => {
+    const exists = await Lead.exists({ _id: leadId, acctId });
+    if (!exists) throw serviceError('Lead not found', 404);
+};
 
 class NoteService {
     /**
@@ -16,22 +55,36 @@ class NoteService {
      * @param {string} leadId
      * @returns {Promise<object[]>}
      */
-    async getNotes(acctId, leadId) {
-        const notes = await LeadNote.find({ acctId, leadId })
-            .sort({ createdAt: -1 })
+    async getNotes(acctId, leadId, { cursor = null, limit = NOTE_LIST_DEFAULT } = {}) {
+        await assertTenantLead(acctId, leadId);
+        const boundedLimit = Math.min(NOTE_LIST_MAX, Math.max(1, Number(limit) || NOTE_LIST_DEFAULT));
+        const decoded = decodeCursor(cursor);
+        const filter = { acctId, leadId };
+        if (decoded) {
+            filter.$or = [
+                { createdAt: { $lt: decoded.createdAt } },
+                { createdAt: decoded.createdAt, _id: { $lt: decoded.id } },
+            ];
+        }
+
+        const notes = await LeadNote.find(filter)
+            .sort({ createdAt: -1, _id: -1 })
+            .limit(boundedLimit + 1)
             .lean();
 
-        if (!notes.length) return [];
+        const hasMore = notes.length > boundedLimit;
+        const page = hasMore ? notes.slice(0, boundedLimit) : notes;
+        if (!page.length) return { items: [], nextCursor: null, hasMore: false, limit: boundedLimit };
 
         // Batch-fetch live admin profiles by userId (scoped to the account)
-        const userIds = [...new Set(notes.map(n => n.userId))];
+        const userIds = [...new Set(page.map(n => n.userId))];
         const admins  = await AccountAdmin.find({ acctId, userId: { $in: userIds } }, {
             userId: 1, firstName: 1, lastName: 1, profileImage: 1
         }).lean();
 
         const adminMap = Object.fromEntries(admins.map(a => [a.userId, a]));
 
-        return notes.map(note => {
+        const items = page.map(note => {
             const admin = adminMap[note.userId];
             // Prefer the live admin name; fall back to the snapshot, then 'Unknown'
             const liveName = admin ? [admin.firstName, admin.lastName].filter(Boolean).join(' ') : '';
@@ -41,6 +94,12 @@ class NoteService {
                 adminProfileImage: admin?.profileImage || null
             };
         });
+        return {
+            items,
+            nextCursor: hasMore ? encodeCursor(page[page.length - 1]) : null,
+            hasMore,
+            limit: boundedLimit,
+        };
     }
 
     /**
@@ -63,8 +122,9 @@ class NoteService {
      */
     async getBatchNoteCounts(acctId, leadIds) {
         if (!leadIds?.length) return {};
+        const uniqueIds = normalizeBatchIds(leadIds);
         const results = await LeadNote.aggregate([
-            { $match: { acctId, leadId: { $in: leadIds } } },
+            { $match: { acctId, leadId: { $in: uniqueIds } } },
             { $group: { _id: '$leadId', count: { $sum: 1 } } }
         ]);
         return Object.fromEntries(results.map(r => [r._id, r.count]));
@@ -82,6 +142,8 @@ class NoteService {
      * @returns {Promise<object>}
      */
     async createNote(acctId, userId, leadId, description, fallbackName = null) {
+        await assertTenantLead(acctId, leadId);
+        if (description.length > NOTE_MAX_LENGTH) throw serviceError(`description is limited to ${NOTE_MAX_LENGTH} characters`);
         const admin = await AccountAdmin.findOne({ acctId, userId }, { firstName: 1, lastName: 1 }).lean();
         const userName = (admin ? [admin.firstName, admin.lastName].filter(Boolean).join(' ') : '') || fallbackName || null;
         const note = await LeadNote.create({ acctId, userId, userName, leadId, description });
@@ -99,10 +161,11 @@ class NoteService {
      * @param {{ isSuperadmin?: boolean, acctId?: string|null }} [opts]
      * @returns {Promise<object|null>}
      */
-    async updateNote(noteId, userId, description, { isSuperadmin = false, acctId = null } = {}) {
-        const filter = { _id: noteId };
+    async updateNote(acctId, leadId, noteId, userId, description, { isSuperadmin = false } = {}) {
+        if (description.length > NOTE_MAX_LENGTH) throw serviceError(`description is limited to ${NOTE_MAX_LENGTH} characters`);
+        const filter = { _id: noteId, acctId, leadId };
         if (isSuperadmin) {
-            if (acctId) filter.acctId = acctId; // a superadmin may edit any note in their account
+            // Account and lead scope above still apply.
         } else {
             filter.userId = userId;             // others may edit only their own note
         }
@@ -123,10 +186,10 @@ class NoteService {
      * @param {{ isSuperadmin?: boolean, acctId?: string|null }} [opts]
      * @returns {Promise<boolean>} true if deleted, false if not found/forbidden
      */
-    async deleteNote(noteId, userId, { isSuperadmin = false, acctId = null } = {}) {
-        const filter = { _id: noteId };
+    async deleteNote(acctId, leadId, noteId, userId, { isSuperadmin = false } = {}) {
+        const filter = { _id: noteId, acctId, leadId };
         if (isSuperadmin) {
-            if (acctId) filter.acctId = acctId;
+            // Account and lead scope above still apply.
         } else {
             filter.userId = userId;
         }

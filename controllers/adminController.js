@@ -23,7 +23,8 @@ const ownScopeFilters = (req) =>
  */
 export const getAdminsFromDb = async (req, res) => {
     try {
-        const { acctId, roster, ...filters } = req.query;
+        const { acctId: _ignoredAcctId, roster, ...filters } = req.query;
+        const acctId = req.tenant.acctId;
 
         if (!acctId) {
             return res.status(400).json({ success: false, message: 'acctId query parameter is required' });
@@ -55,7 +56,8 @@ export const getAdminsFromDb = async (req, res) => {
  */
 export const getAdmins = async (req, res) => {
     try {
-        const { acctId, ...filters } = req.query;
+        const { acctId: _ignoredAcctId, ...filters } = req.query;
+        const acctId = req.tenant.acctId;
 
         if (!acctId) {
             return res.status(400).json({ success: false, message: 'acctId query parameter is required' });
@@ -89,7 +91,8 @@ export const getAdmins = async (req, res) => {
  */
 export const updateContact = async (req, res) => {
     try {
-        const { acctId, email, phone } = req.body;
+        const { email, phone } = req.body;
+        const acctId = req.tenant.acctId;
         const userId = req.user?.userId;
 
         if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
@@ -113,7 +116,8 @@ export const updateContact = async (req, res) => {
  */
 export const updateAccessLevel = async (req, res) => {
     try {
-        const { acctId, chatbotAdminId, accessLevel } = req.body;
+        const { chatbotAdminId, accessLevel } = req.body;
+        const acctId = req.tenant.acctId;
 
         if (!acctId || !chatbotAdminId || !accessLevel) {
             return res.status(400).json({ success: false, message: 'acctId, chatbotAdminId and accessLevel are required' });
@@ -159,7 +163,8 @@ export const updateAccessLevel = async (req, res) => {
  */
 export const updateProfile = async (req, res) => {
     try {
-        const { acctId, chatbotAdminId, firstName, lastName, email, phone, profileImage } = req.body;
+        const { chatbotAdminId, firstName, lastName, email, phone, profileImage } = req.body;
+        const acctId = req.tenant.acctId;
 
         if (!acctId || !chatbotAdminId) {
             return res.status(400).json({ success: false, message: 'acctId and chatbotAdminId are required' });

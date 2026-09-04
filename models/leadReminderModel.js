@@ -51,12 +51,18 @@ const leadReminderSchema = new mongoose.Schema(
         description: {
             type: String,
             required: true,
-            trim: true
+            trim: true,
+            maxlength: 4000
         },
         /** When the main reminder should fire */
         scheduledAt: {
             type: Date,
             required: true
+        },
+        /** Materialized pre-reminder due time, used by indexed recovery scans. */
+        preScheduledAt: {
+            type: Date,
+            default: null
         },
 
         // ── Pre-reminder (optional secondary reminder) ──────────────────────
@@ -119,9 +125,23 @@ const leadReminderSchema = new mongoose.Schema(
             default: false
         },
 
+        // Mongo leases make dispatch mutually exclusive across queue workers and app instances.
+        mainClaimToken:       { type: String, default: null },
+        mainClaimUntil:       { type: Date, default: null },
+        mainAttempts:         { type: Number, default: 0 },
+        mainLastError:        { type: String, default: null, maxlength: 1000 },
+        preClaimToken:        { type: String, default: null },
+        preClaimUntil:        { type: Date, default: null },
+        preAttempts:          { type: Number, default: 0 },
+        preLastError:         { type: String, default: null, maxlength: 1000 },
+        clientClaimToken:     { type: String, default: null },
+        clientClaimUntil:     { type: Date, default: null },
+        clientAttempts:       { type: Number, default: 0 },
+        clientLastError:      { type: String, default: null, maxlength: 1000 },
+
         // ── Client Reminder ──────────────────────────────────────────────────
         clientReminderEnabled: { type: Boolean, default: false },
-        clientMessage:         { type: String,  trim: true, default: '' },
+        clientMessage:         { type: String,  trim: true, default: '', maxlength: 4000 },
         clientScheduledAt:     { type: Date },
         clientChannels:        { type: [String], enum: ['email', 'whatsapp', 'sms'], default: [] },
         clientSent:            { type: Boolean, default: false },
@@ -147,25 +167,35 @@ const leadReminderSchema = new mongoose.Schema(
 );
 
 // Bell badge query — unread fired reminders delivered to a user
-leadReminderSchema.index({ notifiedUserId: 1, mainSent: 1, notificationRead: 1 });
+leadReminderSchema.index({ notifiedUserId: 1, mainSent: 1, bellDismissed: 1, notificationRead: 1 });
 
 // Per-recipient fired reminders list, sorted by scheduled time
-leadReminderSchema.index({ notifiedUserId: 1, mainSent: 1, scheduledAt: -1 });
+leadReminderSchema.index({ notifiedUserId: 1, mainSent: 1, bellDismissed: 1, scheduledAt: -1, _id: -1 });
+
+// Same bell queries when the selected account is supplied by the client.
+leadReminderSchema.index({ acctId: 1, notifiedUserId: 1, mainSent: 1, bellDismissed: 1, scheduledAt: -1, _id: -1 });
+leadReminderSchema.index({ acctId: 1, notifiedUserId: 1, mainSent: 1, bellDismissed: 1, notificationRead: 1 });
 
 // Per-lead panel view
-leadReminderSchema.index({ acctId: 1, leadId: 1, scheduledAt: 1 });
+leadReminderSchema.index({ acctId: 1, leadId: 1, scheduledAt: -1, _id: -1 });
+
+// Account calendar range scan before lead-owner enrichment.
+leadReminderSchema.index({ acctId: 1, scheduledAt: 1, _id: 1 });
 
 // Batch count queries: pending reminders per lead (mainSent:false filter)
 leadReminderSchema.index({ acctId: 1, leadId: 1, mainSent: 1 });
 
 // Recovery cron — find reminders that were never enqueued
-leadReminderSchema.index({ mainSent: 1, jobScheduled: 1, scheduledAt: 1 });
+leadReminderSchema.index({ mainSent: 1, scheduledAt: 1, mainClaimUntil: 1 });
 
 // Pre-reminder recovery
-leadReminderSchema.index({ preReminderEnabled: 1, preReminderSent: 1, jobScheduled: 1, scheduledAt: 1 });
+leadReminderSchema.index({ preReminderEnabled: 1, preReminderSent: 1, preScheduledAt: 1, preClaimUntil: 1 });
+
+// Supports bounded lazy backfill of preScheduledAt for reminders created before this field existed.
+leadReminderSchema.index({ preReminderEnabled: 1, preReminderSent: 1, scheduledAt: 1 });
 
 // Client reminder recovery
-leadReminderSchema.index({ clientReminderEnabled: 1, clientSent: 1, clientJobScheduled: 1, clientScheduledAt: 1 });
+leadReminderSchema.index({ clientReminderEnabled: 1, clientSent: 1, clientScheduledAt: 1, clientClaimUntil: 1 });
 
 const LeadReminder = mongoose.model('LeadReminder', leadReminderSchema);
 

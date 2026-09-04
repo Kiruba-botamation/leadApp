@@ -1,6 +1,7 @@
 import express from 'express';
 import leadController from '../controllers/leadController.js';
 import collectionController from '../controllers/collectionController.js';
+import { requireSuperadmin } from '../middleware/verifiedTenantMiddleware.js';
 
 const router = express.Router();
 
@@ -13,30 +14,30 @@ router.get('/collections', collectionController.getCollections.bind(collectionCo
 router.get('/collections/:collectionId/fields', collectionController.getCollectionFields.bind(collectionController));
 
 /** Create a new collection */
-router.post('/collections', collectionController.createCollection.bind(collectionController));
+router.post('/collections', requireSuperadmin, collectionController.createCollection.bind(collectionController));
 
 /** Update collection name and/or column definitions */
-router.put('/collections/:collectionId', collectionController.updateCollection.bind(collectionController));
+router.put('/collections/:collectionId', requireSuperadmin, collectionController.updateCollection.bind(collectionController));
 
 /** Set a collection as the account default */
-router.put('/collections/:collectionId/default', collectionController.setDefaultCollection.bind(collectionController));
+router.put('/collections/:collectionId/default', requireSuperadmin, collectionController.setDefaultCollection.bind(collectionController));
 
 /** Delete a collection and all its leads */
-router.delete('/collections/:collectionId', collectionController.deleteCollection.bind(collectionController));
+router.delete('/collections/:collectionId', requireSuperadmin, collectionController.deleteCollection.bind(collectionController));
 
 // ── Stage management (embedded in a collection) ──────────────────────────────
 
 /** Add a stage to a collection */
-router.post('/collections/:collectionId/stages', collectionController.addStage.bind(collectionController));
+router.post('/collections/:collectionId/stages', requireSuperadmin, collectionController.addStage.bind(collectionController));
 
 /** Reorder stages — must precede the :stageId route so "reorder" isn't read as an id */
-router.put('/collections/:collectionId/stages/reorder', collectionController.reorderStages.bind(collectionController));
+router.put('/collections/:collectionId/stages/reorder', requireSuperadmin, collectionController.reorderStages.bind(collectionController));
 
 /** Update a stage's name / colour / order */
-router.put('/collections/:collectionId/stages/:stageId', collectionController.updateStage.bind(collectionController));
+router.put('/collections/:collectionId/stages/:stageId', requireSuperadmin, collectionController.updateStage.bind(collectionController));
 
 /** Delete a stage (reassigns its leads to the first remaining stage) */
-router.delete('/collections/:collectionId/stages/:stageId', collectionController.deleteStage.bind(collectionController));
+router.delete('/collections/:collectionId/stages/:stageId', requireSuperadmin, collectionController.deleteStage.bind(collectionController));
 
 // ── Lead CRUD ────────────────────────────────────────────────────────────────
 

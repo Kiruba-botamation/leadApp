@@ -40,7 +40,7 @@ const WORKER_OPTIONS = {
 };
 
 // ── Internal helper — calculate pre-reminder Date ───────────────────────────
-const calcPreReminderDate = (scheduledAt, value, unit) => {
+export const calcPreReminderDate = (scheduledAt, value, unit) => {
     const ms = {
         minutes: value * 60 * 1000,
         hours:   value * 60 * 60 * 1000,
@@ -70,7 +70,7 @@ export const scheduleReminderJobs = async (reminder) => {
         await addJob(
             QUEUE_NAME,
             'reminder-main',
-            { reminderId: reminder._id.toString(), jobType: 'main' },
+            { reminderId: reminder._id.toString(), jobType: 'main', acctId: reminder.acctId, leadId: reminder.leadId },
             {
                 ...JOB_OPTIONS,
                 jobId: `${reminder._id}-main`,
@@ -85,14 +85,14 @@ export const scheduleReminderJobs = async (reminder) => {
 
     // ── Pre-reminder job (when enabled) ──────────────────────────────────
     if (reminder.preReminderEnabled && reminder.preReminderValue && reminder.preReminderUnit) {
-        const preDate  = calcPreReminderDate(reminder.scheduledAt, reminder.preReminderValue, reminder.preReminderUnit);
+        const preDate  = reminder.preScheduledAt || calcPreReminderDate(reminder.scheduledAt, reminder.preReminderValue, reminder.preReminderUnit);
         const preDelay = Math.max(0, preDate.getTime() - now);
 
         try {
             await addJob(
                 QUEUE_NAME,
                 'reminder-pre',
-                { reminderId: reminder._id.toString(), jobType: 'pre' },
+                { reminderId: reminder._id.toString(), jobType: 'pre', acctId: reminder.acctId, leadId: reminder.leadId },
                 {
                     ...JOB_OPTIONS,
                     jobId: `${reminder._id}-pre`,
@@ -114,7 +114,7 @@ export const scheduleReminderJobs = async (reminder) => {
             await addJob(
                 QUEUE_NAME,
                 'client-reminder',
-                { reminderId: reminder._id.toString(), jobType: 'client' },
+                { reminderId: reminder._id.toString(), jobType: 'client', acctId: reminder.acctId, leadId: reminder.leadId },
                 {
                     ...JOB_OPTIONS,
                     jobId: `${reminder._id}-client`,
@@ -122,7 +122,10 @@ export const scheduleReminderJobs = async (reminder) => {
                 }
             );
             logger.info(`[ReminderQueue] Client reminder job scheduled | reminderId=${reminder._id} | delay=${Math.round(clientDelay / 1000)}s`);
-            await LeadReminder.findByIdAndUpdate(reminder._id, { clientJobScheduled: true });
+            await LeadReminder.updateOne(
+                { _id: reminder._id, acctId: reminder.acctId, leadId: reminder.leadId },
+                { clientJobScheduled: true }
+            );
         } catch (err) {
             logger.error(`[ReminderQueue] Failed to schedule client job for ${reminder._id}: ${err.message}`);
         }
@@ -130,7 +133,10 @@ export const scheduleReminderJobs = async (reminder) => {
 
     // Mark jobScheduled in DB so the recovery cron doesn't re-process it
     if (jobScheduledSuccessfully) {
-        await LeadReminder.findByIdAndUpdate(reminder._id, { jobScheduled: true });
+        await LeadReminder.updateOne(
+            { _id: reminder._id, acctId: reminder.acctId, leadId: reminder.leadId },
+            { jobScheduled: true }
+        );
     }
 };
 

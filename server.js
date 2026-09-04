@@ -10,6 +10,7 @@ import accountRoutes from './routes/accountRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import roleRoutes from './routes/roleRoutes.js';
 import ssoAuthMiddleware from './middleware/ssoAuthMiddleware.js';
+import verifiedTenantMiddleware from './middleware/verifiedTenantMiddleware.js';
 import { apiKeyAuthMiddleware } from './middleware/apiKeyAuthMiddleware.js';
 import leadRateLimiter from './middleware/leadRateLimiter.js';
 import { loadSecretsFromAWS } from './config/secretsManager.js';
@@ -26,6 +27,8 @@ import activityRoutes from './routes/activityRoutes.js';
 import webhookRoutes  from './routes/webhookRoutes.js';
 import mcpRoutes      from './mcp/leadAppMcpServer.js';
 import { initializeWorker as initWebhookWorker } from './queue/webhookQueue.js';
+import { initializeWorker as initExportWorker, getHealth as getExportQueueHealth } from './queue/exportQueue.js';
+import exportRoutes from './routes/exportRoutes.js';
 import { registerWebhookDispatcher } from './services/webhookService.js';
 import { seedRoles } from './models/roleModel.js';
 
@@ -115,6 +118,7 @@ mongoConnector.connect()
     initLeadWorker();
     initReminderWorker();
     initWebhookWorker();
+    initExportWorker();
     // Bridge domain events (lead created/assigned/unassigned) → webhook delivery queue
     registerWebhookDispatcher();
     console.log('[Startup] Queue workers started | active queues:', getRegisteredQueues().join(', '));
@@ -170,7 +174,7 @@ app.get('/login', (req, res) => {
 app.use('/api/ui/accounts', ssoAuthMiddleware, accountRoutes);
 
 // Admin Routes — SSO required
-app.use('/api/ui/admins', ssoAuthMiddleware, adminRoutes);
+app.use('/api/ui/admins', ssoAuthMiddleware, verifiedTenantMiddleware, adminRoutes);
 
 // Roles — SSO required
 app.use('/api/ui/roles', ssoAuthMiddleware, roleRoutes);
@@ -178,20 +182,21 @@ app.use('/api/ui/roles', ssoAuthMiddleware, roleRoutes);
 // API key path: auth → rate limit (100 req/60s per acctId) → routes
 // Rate limiter runs after auth so req.acctId is already set.
 app.use('/api/leads', apiKeyAuthMiddleware, leadRateLimiter, leadRoutes);
-app.use('/api/ui/leads', ssoAuthMiddleware, leadRoutes);
-
-app.use('/api/ui/analytics', ssoAuthMiddleware, analyticsRoutes);
-app.use('/api/ui/analytics/ai', ssoAuthMiddleware, aiAnalyticsRoutes);
 
 // Notes & Reminders — SSO required
-app.use('/api/ui/leads/:leadId/notes',     ssoAuthMiddleware, noteRoutes);
-app.use('/api/ui/leads/:leadId/reminders', ssoAuthMiddleware, reminderRoutes);
+app.use('/api/ui/leads/:leadId/notes',     ssoAuthMiddleware, verifiedTenantMiddleware, noteRoutes);
+app.use('/api/ui/leads/:leadId/reminders', ssoAuthMiddleware, verifiedTenantMiddleware, reminderRoutes);
+app.use('/api/ui/leads', ssoAuthMiddleware, verifiedTenantMiddleware, leadRoutes);
+
+app.use('/api/ui/analytics/ai', ssoAuthMiddleware, verifiedTenantMiddleware, aiAnalyticsRoutes);
+app.use('/api/ui/analytics', ssoAuthMiddleware, verifiedTenantMiddleware, analyticsRoutes);
 
 // Batch activity counts (notes + reminders per lead, for grid highlights)
-app.use('/api/ui/activity', ssoAuthMiddleware, activityRoutes);
+app.use('/api/ui/activity', ssoAuthMiddleware, verifiedTenantMiddleware, activityRoutes);
 
 // Webhook configuration + recent deliveries — SSO required
-app.use('/api/ui/webhooks', ssoAuthMiddleware, webhookRoutes);
+app.use('/api/ui/webhooks', ssoAuthMiddleware, verifiedTenantMiddleware, webhookRoutes);
+app.use('/api/ui/exports', ssoAuthMiddleware, verifiedTenantMiddleware, exportRoutes);
 
 // MCP endpoint (admin management tools) — SSO required
 app.use('/api/ui/mcp', ssoAuthMiddleware, mcpRoutes);
@@ -213,7 +218,8 @@ app.get('/health', async (req, res) => {
     redis: redisHealthy ? 'connected' : 'disconnected',
     queues: activeQueues,
     leadQueue: leadQueueHealth,
-    reminderQueue: await getReminderQueueHealth()
+    reminderQueue: await getReminderQueueHealth(),
+    exportQueue: await getExportQueueHealth()
   });
 });
 
