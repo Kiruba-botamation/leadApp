@@ -5,6 +5,7 @@
  */
 import LeadReminder  from '../models/leadReminderModel.js';
 import Lead          from '../models/leadModel.js';
+import AccountAdmin  from '../models/accountAdminModel.js';
 import {
     scheduleReminderJobs,
     cancelReminderJobs

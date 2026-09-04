@@ -9,16 +9,16 @@ const router = express.Router();
 // ── Bell inbox ────────────────────────────────────────────────────────────────
 
 /** Get fired-but-unread reminders for the notification bell */
-router.get('/fired', reminderController.getFiredReminders.bind(reminderController));
+router.get('/fired', verifiedTenantMiddleware, reminderController.getFiredReminders.bind(reminderController));
 
 /** Calendar view — all reminders for the current user within a date range */
 router.get('/calendar', verifiedTenantMiddleware, reminderController.getCalendarReminders.bind(reminderController));
 
 /** Mark reminders as read */
-router.post('/mark-read', reminderController.markRead.bind(reminderController));
+router.post('/mark-read', verifiedTenantMiddleware, reminderController.markRead.bind(reminderController));
 
 /** Delete a single fired reminder from the bell inbox */
-router.delete('/fired/:reminderId', reminderController.dismissFired.bind(reminderController));
+router.delete('/fired/:reminderId', verifiedTenantMiddleware, reminderController.dismissFired.bind(reminderController));
 
 // ── Push subscription management ─────────────────────────────────────────────
 
