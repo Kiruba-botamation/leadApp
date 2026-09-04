@@ -44,33 +44,10 @@ const JOB_CONFIG = {
     },
 };
 
-const calculatePreScheduledAt = (reminder) => {
-    const unitMs = { minutes: 60000, hours: 3600000, days: 86400000 }[reminder.preReminderUnit];
-    if (!unitMs || !reminder.preReminderValue) return null;
-    return new Date(new Date(reminder.scheduledAt).getTime() - (Number(reminder.preReminderValue) * unitMs));
-};
-
-const materializeLegacyPreDate = async (reminderId, scope = {}) => {
-    const filter = { _id: reminderId, preReminderEnabled: true, preScheduledAt: null, ...scope };
-    const reminder = await LeadReminder.findOne(filter, {
-        acctId: 1, leadId: 1, scheduledAt: 1, preReminderValue: 1, preReminderUnit: 1,
-    }).lean();
-    if (!reminder) return;
-    const preScheduledAt = calculatePreScheduledAt(reminder);
-    if (preScheduledAt) {
-        await LeadReminder.updateOne(
-            { _id: reminder._id, acctId: reminder.acctId, leadId: reminder.leadId, preScheduledAt: null },
-            { preScheduledAt }
-        );
-    }
-};
-
 /** Atomically claim one due, unsent delivery. Returns null when another worker owns it. */
 export const claimReminder = async (reminderId, jobType, scope = {}) => {
     const config = JOB_CONFIG[jobType];
     if (!config) throw new Error(`Unsupported reminder job type: ${jobType}`);
-    if (jobType === 'pre') await materializeLegacyPreDate(reminderId, scope);
-
     const now = new Date();
     const token = randomUUID();
     const filter = {
@@ -238,11 +215,14 @@ export const processClientReminder = async (reminderId, scope = {}) => {
     }
 };
 
-/** BullMQ entry point. New jobs include tenant scope; old jobs remain processable. */
+/** BullMQ entry point. Jobs must include tenant scope. */
 export const processor = async (job) => {
     const { reminderId, jobType, acctId, leadId } = job.data;
+    if (!reminderId || !jobType || !acctId || !leadId) {
+        throw new Error('Reminder job is missing required tenant scope');
+    }
     logger.info(`[ReminderProcessor] Job [${job.id}] | reminderId=${reminderId} | type=${jobType} | attempt=${job.attemptsMade + 1}`);
-    const scope = acctId && leadId ? { acctId, leadId } : {};
+    const scope = { acctId, leadId };
     if (jobType === 'client') return processClientReminder(reminderId, scope);
     return processReminder(reminderId, jobType, scope);
 };

@@ -56,7 +56,7 @@ export const getUserFromAuthService = async (token) => {
             headers: { Authorization: `Bearer ${token}` },
             timeout: 5000
         });
-        return response.data?.user || response.data || null;
+        return response.data?.user || null;
     } catch (error) {
         console.error('[SSO] getUserFromAuthService error:', error.message);
         return null;
@@ -232,40 +232,6 @@ export const requireAccount = async (req, res, next) => {
             message: 'Authorization error'
         });
     }
-};
-
-/**
- * Hybrid Auth Middleware — supports both HTTP-only cookies AND Bearer token.
- * Useful for backward compatibility with clients that send Authorization headers.
- */
-export const hybridAuthMiddleware = async (req, res, next) => {
-    // Skip authentication for local development
-    const skipUser = getSkipLoginUser();
-    if (skipUser) {
-        req.user = skipUser;
-        return next();
-    }
-
-    // First try Bearer token from Authorization header
-    const authHeader = req.headers['authorization'];
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.slice(7);
-        try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            req.user = {
-                userId: decoded.userId,
-                email:  decoded.email,
-                role:   decoded.role,
-                permissions: decoded.permissions || [],
-            };
-            return next();
-        } catch (err) {
-            // Fall through to cookie-based auth
-            console.log('[Hybrid Auth] Bearer token invalid, trying cookies:', err.message);
-        }
-    }
-    // Fall back to cookie-based SSO auth
-    return ssoAuthMiddleware(req, res, next);
 };
 
 export default ssoAuthMiddleware;

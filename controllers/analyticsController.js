@@ -30,12 +30,12 @@ class AnalyticsController {
    */
   async getSchema(req, res) {
     try {
-      const { viewingAs, selectedUserId } = req.query;
+      const { selectedUserId } = req.query;
       const acctId = req.tenant.acctId;
 
-      // Schemas are keyed by userId. In view-as mode, selectedUserId/viewingAs is
-      // the target user's userId; otherwise load the caller's own schema.
-      const requestedUserId = selectedUserId || viewingAs;
+      // Schemas are keyed by userId. In view-as mode, selectedUserId is the
+      // target user's userId; otherwise load the caller's own schema.
+      const requestedUserId = selectedUserId;
       const effectiveUserId = req.user.accessLevel === 'superadmin' && requestedUserId
         ? requestedUserId
         : req.user.userId;
@@ -73,7 +73,7 @@ class AnalyticsController {
       return res.status(200).json({
         success: true,
         data: result || null,
-        viewingAs: selectedUserId
+        selectedUserId
       });
     } catch (error) {
       console.error('Error in viewAs:', error);
@@ -83,13 +83,11 @@ class AnalyticsController {
 
   /**
    * Get chart data
-   * GET /api/analytics/chart-data
+   * POST /api/ui/analytics/chart-data
    */
   async getChartData(req, res) {
     try {
-      // Support both POST (body) and GET (query params)
-      const source = req.body && Object.keys(req.body).length ? req.body : req.query;
-      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, dateFilterField, collectionId, dateGranularity } = source;
+      const { xAxis, yAxis, zAxis, aggregation, dateFrom, dateTo, dateFilterField, collectionId, dateGranularity } = req.body;
       const acctId = req.tenant?.acctId;
       if (!acctId) {
         return res.status(403).json({
@@ -119,8 +117,6 @@ class AnalyticsController {
       const validGranularities = ['hour', 'day', 'month', 'year'];
       const resolvedGranularity = validGranularities.includes(dateGranularity) ? dateGranularity : null;
 
-      // Keep old clients compatible: date axes historically filtered themselves,
-      // while categorical axes filtered by updatedAt.
       const validDateFilterFields = ['createdAt', 'updatedAt'];
       if (dateFilterField && !validDateFilterFields.includes(dateFilterField)) {
         return res.status(400).json({
@@ -128,12 +124,15 @@ class AnalyticsController {
           message: `Invalid date filter field. Allowed values: ${validDateFilterFields.join(', ')}`
         });
       }
-      const resolvedDateFilterField = dateFilterField
-        || (validDateFilterFields.includes(xAxis) ? xAxis : 'updatedAt');
-
       // Parse and validate dates if provided
       let dateFilter = null;
       if (dateFrom || dateTo) {
+        if (!dateFilterField) {
+          return res.status(400).json({
+            success: false,
+            message: 'dateFilterField is required when dateFrom or dateTo is supplied'
+          });
+        }
         const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
         const parseUtcDate = (value) => {
           if (!value || !dateOnlyPattern.test(value)) return null;
@@ -164,7 +163,7 @@ class AnalyticsController {
         zAxis: zAxis || null,
         aggregation,
         dateFilter,
-        dateFilterField: resolvedDateFilterField,
+        dateFilterField: dateFilterField || null,
         acctId,
         collectionId: collectionId || null,
         dateGranularity: resolvedGranularity

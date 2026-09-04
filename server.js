@@ -152,13 +152,7 @@ mongoConnector.connect()
   }
 })();
 
-// SSO Routes
-app.use('/api/sso', ssoRoutes);
-
-// Auth Routes (alias for SSO routes to support /api/auth endpoints)
-app.use('/api/auth', ssoRoutes);
-
-// UI SSO Routes (alias for frontend UI)
+// SSO routes used by the frontend.
 app.use('/api/ui/sso', ssoRoutes);
 
 // Login redirect route

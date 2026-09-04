@@ -19,7 +19,7 @@ const MODEL_NAME = 'gemini-2.5-flash';
  *
  * @param {string} message - Latest user message
  * @param {Array<{ role: 'user'|'assistant', text: string }>} history - Prior conversation turns
- * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: Array<{field: string, label: string, type: string}> }>} collectionsWithFields
  * @returns {Promise<{ type: 'followUp'|'charts', message: string, quickReplies?: string[], charts?: object[] }>}
  */
 export async function generateAnalyticsCharts(message, history = [], collectionsWithFields = [], currentCharts = []) {
@@ -68,14 +68,12 @@ export async function generateAnalyticsCharts(message, history = [], collections
         throw new Error('AI response is incomplete. Please try again.');
     }
 
-    // Normalise: ensure charts array is present when type is 'charts'
     if (parsed.type === 'charts' && !Array.isArray(parsed.charts)) {
-        parsed.charts = [];
+        throw new Error('AI charts response is incomplete. Please try again.');
     }
 
-    // Normalise: ensure quickReplies array is present when type is 'followUp'
     if (parsed.type === 'followUp' && !Array.isArray(parsed.quickReplies)) {
-        parsed.quickReplies = [];
+        throw new Error('AI follow-up response is incomplete. Please try again.');
     }
 
     return parsed;

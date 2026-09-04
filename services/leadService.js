@@ -27,8 +27,6 @@ const MAX_LEAD_FIELDS = 150;
 const MAX_LEAD_DOCUMENT_BYTES = 512 * 1024;
 const MERGE_WRITE_BATCH_SIZE = 100;
 const LEAD_QUERY_MAX_TIME_MS = Number.parseInt(process.env.LEAD_QUERY_MAX_TIME_MS || '5000', 10);
-const MAX_LEGACY_PAGE = 100;
-const MAX_LEGACY_SCAN = 1000;
 
 function requestError(message, statusCode = 400) {
     const error = new Error(message);
@@ -47,19 +45,19 @@ class LeadService {
      *
      * @param {object|object[]} leadData   — single lead object or array
      * @param {string}          acctId
-     * @param {string|null}     collection — collection name (uses default when null)
+     * @param {string|null}     collection
      * @param {string[]|null}   mergeProperties
      */
     async createLead(leadData, acctId, collection = null, mergeProperties = null) {
-        const collectionName = collection || 'default';
-
-        // ── 1. Resolve & validate collection ────────────────────────────────
-        const collectionDoc = await collectionService.findByName(acctId, collectionName);
+        const collectionDoc = collection
+            ? await collectionService.findByName(acctId, collection)
+            : await collectionService.findDefault(acctId);
         if (!collectionDoc) {
-            const err = new Error(`Collection "${collectionName}" not found. Create it in Settings → Collection before pushing data.`);
+            const err = new Error(collection ? `Collection "${collection}" not found.` : 'Default collection not found.');
             err.statusCode = 404;
             throw err;
         }
+        const collectionName = collectionDoc.collectionName;
         const collectionId = collectionDoc._id;
 
         // Build set of allowed field keys: system + stage + user-defined
@@ -89,8 +87,6 @@ class LeadService {
             for (const property of mergeProperties) assertSafeFieldKey(property, allowedFields, 'merge property');
         }
 
-        // `responsible` accepts a chatbotAdminId, account-admin _id, or userId.
-        // Resolve all three forms to the canonical lead-app userId before storage.
         const identifierValue = value => value === undefined || value === null ? '' : String(value).trim();
         const hasIdentifier = value => identifierValue(value) !== '';
         const responsibleIds = new Set();
@@ -100,31 +96,17 @@ class LeadService {
         }
 
         const admins = responsibleIds.size
-            ? await AccountAdmin.find(
-                {
-                    acctId,
-                    $or: [
-                        { chatbotAdminId: { $in: [...responsibleIds] } },
-                        { _id: { $in: [...responsibleIds] } },
-                        { userId: { $in: [...responsibleIds] } }
-                    ]
-                },
-                { chatbotAdminId: 1, userId: 1 }
-            ).lean()
+            ? await AccountAdmin.find({ acctId, userId: { $in: [...responsibleIds] } }, { userId: 1 }).lean()
             : [];
 
-        const userIdByChatbotId = new Map(admins.map(admin => [String(admin.chatbotAdminId), admin.userId]));
-        const userIdByAccountAdminId = new Map(admins.map(admin => [String(admin._id), admin.userId]));
         const userIdByUserId = new Map(admins.map(admin => [String(admin.userId), admin.userId]));
 
         for (const item of items) {
             if (hasIdentifier(item.responsible)) {
                 const id = identifierValue(item.responsible);
-                const userId = userIdByChatbotId.get(id)
-                    ?? userIdByAccountAdminId.get(id)
-                    ?? userIdByUserId.get(id);
+                const userId = userIdByUserId.get(id);
                 if (!userId) {
-                    const err = new Error(`No admin found for responsible identifier "${id}" in this account.`);
+                    const err = new Error(`No admin found for responsible userId "${id}" in this account.`);
                     err.statusCode = 400;
                     throw err;
                 }
@@ -239,7 +221,6 @@ class LeadService {
      */
     async getAllLeads(filters = {}) {
         const {
-            page = 1,
             limit = 10,
             sortBy = 'updatedAt',
             sortOrder = -1,
@@ -261,14 +242,6 @@ class LeadService {
             throw requestError('collectionId must be a string');
         }
         const boundedLimit = parseLeadLimit(limit);
-        const requestedPage = Number(page);
-        if (!Number.isInteger(requestedPage) || requestedPage < 1 || requestedPage > MAX_LEGACY_PAGE) {
-            throw requestError(`page must be an integer between 1 and ${MAX_LEGACY_PAGE}`);
-        }
-        if (cursorRaw && requestedPage !== 1) throw requestError('cursor cannot be combined with page greater than 1');
-        if (!cursorRaw && requestedPage * boundedLimit > MAX_LEGACY_SCAN) {
-            throw requestError(`Legacy page requests are limited to ${MAX_LEGACY_SCAN} traversed leads; use cursor pagination`);
-        }
 
         let collectionDoc = null;
         if (collectionId) {
@@ -340,31 +313,16 @@ class LeadService {
             decodedCursor = { ...decodedCursor, value: date };
         }
 
-        let rows = [];
-        let hasNextPage = false;
-        let pageCursor = decodedCursor;
-        const iterations = cursorRaw ? 1 : requestedPage;
-        for (let iteration = 1; iteration <= iterations; iteration += 1) {
-            const pageConditions = pageCursor
-                ? [...conditions, buildKeysetCondition(sortBy, sortOrder, pageCursor)]
-                : conditions;
-            const found = await Lead.find({ $and: pageConditions }, projection)
-                .sort({ [sortBy]: sortOrder, _id: sortOrder })
-                .limit(boundedLimit + 1)
-                .maxTimeMS(LEAD_QUERY_MAX_TIME_MS)
-                .lean();
-            hasNextPage = found.length > boundedLimit;
-            rows = found.slice(0, boundedLimit);
-            if (iteration < iterations) {
-                if (!hasNextPage || rows.length === 0) {
-                    rows = [];
-                    hasNextPage = false;
-                    break;
-                }
-                const last = rows.at(-1);
-                pageCursor = { value: last[sortBy] ?? null, id: String(last._id) };
-            }
-        }
+        const pageConditions = decodedCursor
+            ? [...conditions, buildKeysetCondition(sortBy, sortOrder, decodedCursor)]
+            : conditions;
+        const found = await Lead.find({ $and: pageConditions }, projection)
+            .sort({ [sortBy]: sortOrder, _id: sortOrder })
+            .limit(boundedLimit + 1)
+            .maxTimeMS(LEAD_QUERY_MAX_TIME_MS)
+            .lean();
+        const hasNextPage = found.length > boundedLimit;
+        let rows = found.slice(0, boundedLimit);
 
         const responsibleIds = [...new Set(rows.map(row => row.responsible).filter(Boolean))];
         const admins = responsibleIds.length
@@ -392,15 +350,9 @@ class LeadService {
             fields: [...allowedDataFields],
             pageInfo: {
                 hasNextPage,
-                hasPreviousPage: Boolean(cursorRaw) || requestedPage > 1,
                 nextCursor
             },
-            pagination: {
-                total,
-                page: requestedPage,
-                limit: boundedLimit,
-                pages: total === null ? null : Math.ceil(total / boundedLimit)
-            }
+            total
         };
     }
 

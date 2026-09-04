@@ -1,6 +1,6 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
-import ssoAuthMiddleware, { hybridAuthMiddleware, getUserFromAuthService, getCookieConfig } from '../middleware/ssoAuthMiddleware.js';
+import ssoAuthMiddleware, { getUserFromAuthService, getCookieConfig } from '../middleware/ssoAuthMiddleware.js';
 
 const router = express.Router();
 
@@ -9,7 +9,7 @@ const router = express.Router();
  */
 
 /**
- * POST /api/auth/login
+ * POST /api/ui/sso/login
  * @desc    Initiate SSO login
  * @access  Public
  */
@@ -27,12 +27,12 @@ router.post('/login', (req, res) => {
             // Use built-in mock auth - redirect includes final destination
             const encodedRedirect = encodeURIComponent(finalRedirectUrl);
             const backendBaseUrl = process.env.BACKEND_BASE_URL || `http://localhost:${process.env.PORT || 8083}`;
-            actualAuthUrl = `${backendBaseUrl}/api/auth/mock-auth-login?redirect=${encodedRedirect}`;
+            actualAuthUrl = `${backendBaseUrl}/api/ui/sso/mock-auth-login?redirect=${encodedRedirect}`;
         } else {
             // Use real external auth service - auth service must redirect to OUR callback
             // The callback URL includes the final frontend redirect as a parameter
             const backendBaseUrl = process.env.BACKEND_BASE_URL || `http://localhost:${process.env.PORT || 8083}`;
-            const callbackUrl = `${backendBaseUrl}/api/auth/callback?redirect=${encodeURIComponent(finalRedirectUrl)}`;
+            const callbackUrl = `${backendBaseUrl}/api/ui/sso/callback?redirect=${encodeURIComponent(finalRedirectUrl)}`;
             const encodedCallbackUrl = encodeURIComponent(callbackUrl);
             actualAuthUrl = `${authFrontendUrl}/login?redirect=${encodedCallbackUrl}`;
         }
@@ -63,12 +63,10 @@ router.post('/login', (req, res) => {
 });
 
 /**
- * GET /api/ui/sso/callback  (also /api/auth/callback)
+ * GET /api/ui/sso/callback
  * @desc    SSO callback — receives tokens from auth service, sets HTTP-only cookies,
  *          and redirects the user to the original URL.
- *          Supports two formats:
- *            1. Guide format:  ?access_token=<jwt>&refresh_token=<jwt>&redirect=<url>
- *            2. Legacy format: ?token=<jwt>&redirect=<url>
+ *          Expects ?access_token=<jwt>&refresh_token=<jwt>&redirect=<url>.
  * @access  Public
  */
 router.get('/callback', (req, res) => {
@@ -98,7 +96,7 @@ router.get('/callback', (req, res) => {
 });
 
 /**
- * GET /api/auth/me
+ * GET /api/ui/sso/me
  * @desc    Get current authenticated user
  * @access  Protected (requires authentication)
  */
@@ -111,7 +109,7 @@ router.get('/me', ssoAuthMiddleware, (req, res) => {
 });
 
 /**
- * GET /api/ui/sso/auth (also /api/auth/auth, /api/sso/auth)
+ * GET /api/ui/sso/auth
  * @desc    Get authenticated user information
  * @access  Protected (requires authentication)
  */
@@ -145,21 +143,7 @@ router.get('/user', ssoAuthMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/ui/sso/hybrid-test
- * @desc    Test hybrid (cookie + Bearer token) authentication
- * @access  Protected (hybrid: cookies OR Bearer token)
- */
-router.get('/hybrid-test', hybridAuthMiddleware, (req, res) => {
-    res.json({
-        success: true,
-        message: 'Hybrid auth working correctly',
-        user: req.user,
-        authMethod: req.headers.authorization ? 'bearer' : 'cookie'
-    });
-});
-
-/**
- * GET /api/auth/verify
+ * GET /api/ui/sso/verify
  * @desc    Verify if user is authenticated
  * @access  Protected (requires authentication)
  */
@@ -172,7 +156,7 @@ router.get('/verify', ssoAuthMiddleware, (req, res) => {
 });
 
 /**
- * POST /api/ui/sso/logout  (also /api/auth/logout)
+ * POST /api/ui/sso/logout
  * @desc    Logout — clears HTTP-only cookies and returns the login URL.
  *          Public: no auth required so unauthenticated clients can still logout cleanly.
  * @access  Public
@@ -189,7 +173,6 @@ router.post('/logout', (req, res) => {
 
     res.clearCookie('access_token', cookieClearOptions);
     res.clearCookie('refresh_token', cookieClearOptions);
-    res.clearCookie('sso_token', cookieClearOptions); // Legacy cookie
 
     const redirectParam = req.query.redirect || (req.body && req.body.redirect) || '';
     const authServiceUrl = process.env.AUTH_SERVICE_URL || 'http://localhost:8081';
@@ -210,7 +193,7 @@ router.post('/logout', (req, res) => {
  */
 
 /**
- * GET /api/auth/mock-auth-login
+ * GET /api/ui/sso/mock-auth-login
  * @desc    Mock auth service login page (simulates external SSO at port 3001)
  * @access  Public
  */
@@ -269,7 +252,7 @@ router.get('/mock-auth-login', (req, res) => {
           const email = document.getElementById('email').value;
           
           // Call backend to generate JWT tokens
-          const response = await fetch(window.location.origin + '/api/auth/mock-auth-callback', {
+          const response = await fetch(window.location.origin + '/api/ui/sso/mock-auth-callback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
@@ -295,7 +278,7 @@ router.get('/mock-auth-login', (req, res) => {
 });
 
 /**
- * POST /api/auth/mock-auth-callback
+ * POST /api/ui/sso/mock-auth-callback
  * @desc    Process mock login and generate JWT tokens
  * @access  Public
  */

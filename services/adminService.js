@@ -60,13 +60,11 @@ const resolveAcctNo = async (acctId) => {
 
 /** Normalise a single Botamation admin payload to the fields we mirror locally. */
 export const normaliseBotamationAdmin = (a) => ({
-    chatbotAdminId: a.adminId ?? a.id ?? a._id ?? null,
-    firstName: a.firstName ?? a.first_name ?? null,
-    lastName: a.lastName ?? a.last_name ?? null,
-    phone: a.phone ?? a.phoneNumber ?? a.mobile ?? a.contact ?? null,
-    profileImage: a.profile_pic ?? a.profileImage ?? a.profile_image ?? a.profileImageUrl
-        ?? a.picture ?? a.photo ?? a.avatar ?? a.image ?? a.thumbnail
-        ?? a.profile_photo ?? a.dp ?? null
+    chatbotAdminId: a.adminId ?? null,
+    firstName: a.firstName ?? null,
+    lastName: a.lastName ?? null,
+    phone: a.phone ?? null,
+    profileImage: a.profileImage ?? null
 });
 
 /**

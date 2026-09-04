@@ -182,17 +182,14 @@ export const responseJsonSchema = {
 
 // ── System prompt builder — shared across all providers ───────────────────────
 /**
- * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: Array<{field: string, label: string, type: string}> }>} collectionsWithFields
  * @param {Array<object>} currentCharts - Existing charts on the dashboard
  * @returns {string} Full system instruction text
  */
 export function buildSystemPrompt(collectionsWithFields, currentCharts = [], today = new Date().toISOString().split('T')[0]) {
-    // Fields may be plain strings or field objects ({ field, label, ... }); render the
-    // field key so the AI uses it as the xAxis/yAxis "value".
-    const fieldKey = (f) => (typeof f === 'string' ? f : (f?.field ?? f?.value ?? ''));
     const collectionsBlock = collectionsWithFields.length > 0
         ? collectionsWithFields.map(c =>
-            `  - Collection: "${c.collectionName}" (id: ${c._id})\n    Fields: ${(c.fields || []).map(fieldKey).filter(Boolean).join(', ')}`
+            `  - Collection: "${c.collectionName}" (id: ${c._id})\n    Fields: ${c.fields.map(f => f.field).join(', ')}`
         ).join('\n')
         : '  - No collections available yet';
 

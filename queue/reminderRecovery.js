@@ -13,46 +13,6 @@ export const RECOVERY_INTERVAL_MS = 2 * 60 * 1000;
 export const RECOVERY_BATCH_SIZE = 100;
 const RECOVERY_CONCURRENCY = 5;
 
-const calculatePreScheduledAt = (reminder) => {
-    const unitMs = { minutes: 60000, hours: 3600000, days: 86400000 }[reminder.preReminderUnit];
-    if (!unitMs || !reminder.preReminderValue) return null;
-    return new Date(new Date(reminder.scheduledAt).getTime() - (Number(reminder.preReminderValue) * unitMs));
-};
-
-/** Lazily migrate old reminders so all future pre-reminder scans use a due-time index. */
-const backfillPreScheduledAt = async () => {
-    const legacy = await LeadReminder.find(
-        {
-            preReminderEnabled: true,
-            preReminderSent: false,
-            preScheduledAt: null,
-            preReminderValue: { $gt: 0 },
-            preReminderUnit: { $in: ['minutes', 'hours', 'days'] },
-        },
-        { acctId: 1, leadId: 1, scheduledAt: 1, preReminderValue: 1, preReminderUnit: 1 }
-    )
-        .sort({ scheduledAt: 1, _id: 1 })
-        .limit(RECOVERY_BATCH_SIZE)
-        .lean();
-
-    const operations = legacy.flatMap((reminder) => {
-        const preScheduledAt = calculatePreScheduledAt(reminder);
-        if (!preScheduledAt) return [];
-        return [{
-            updateOne: {
-                filter: {
-                    _id: reminder._id,
-                    acctId: reminder.acctId,
-                    leadId: reminder.leadId,
-                    preScheduledAt: null,
-                },
-                update: { $set: { preScheduledAt } },
-            },
-        }];
-    });
-    if (operations.length) await LeadReminder.bulkWrite(operations, { ordered: false });
-};
-
 const processInChunks = async (items, handler, label) => {
     for (let offset = 0; offset < items.length; offset += RECOVERY_CONCURRENCY) {
         const chunk = items.slice(offset, offset + RECOVERY_CONCURRENCY);
@@ -79,7 +39,6 @@ const findDue = (filter, dueField, claimField, now) => LeadReminder.find(
 
 export const runRecovery = async () => {
     try {
-        await backfillPreScheduledAt();
         const now = new Date();
         const [main, pre, client] = await Promise.all([
             findDue({ mainSent: false }, 'scheduledAt', 'mainClaimUntil', now),

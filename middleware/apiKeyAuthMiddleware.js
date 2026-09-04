@@ -10,43 +10,25 @@ const withTimeout = (promise, timeoutMs, message) => Promise.race([
 /**
  * Middleware to validate x-api-key and acctId against the accountApiKey collection.
  * - Requires both apiKey and acctId to be present
- * - Accepts apiKey from: x-api-key header, query param, or body
- * - Accepts acctId from: x-acct-id header, query param, path param, or body
+ * - Requires x-api-key and x-page-id headers
  * - Validates that the apiKey belongs to the provided acctId
  * - Uses efficient token lookup with indexed query
  */
 export const apiKeyAuthMiddleware = async (req, res, next) => {
     try {
-        // 1️⃣ Extract API key from multiple sources
-        const apiKey =
-            (req.get && req.get('x-api-key')) ||
-            req.headers['x-api-key'] ||
-            req.query.apiKey ||
-            req.body?.apiKey;
+        const apiKey = req.headers['x-api-key'];
 
-        // 2️⃣ Extract acctNo from multiple sources
-        const acctNoCandidates = [
-            req.headers['x-page-id']
-        ].filter(Boolean).map(String);
+        // Resolve the provider account number from its documented header.
+        const acctNo = req.headers['x-page-id'] ? String(req.headers['x-page-id']) : null;
 
         // 3️⃣ Validate both apiKey and acctNo are present
         if (!apiKey) {
             return res.status(400).json({ success: false, message: 'Missing apiKey' });
         }
 
-        if (acctNoCandidates.length === 0) {
+        if (!acctNo) {
             return res.status(400).json({ success: false, message: 'Missing acctNo' });
         }
-
-        // 4️⃣ Ensure consistency if acctNo provided from multiple sources
-        const uniqueAcctNos = new Set(acctNoCandidates);
-        if (uniqueAcctNos.size > 1) {
-            return res.status(400).json({
-                success: false,
-                message: 'multiple acctNo values provided across sources'
-            });
-        }
-        const acctNo = acctNoCandidates[0];
 
         //TODO: Add caching layer here if needed to reduce DB load for repeated requests with the same apiKey + acctNo
         // 5️⃣ Single query: match apiKey + join Account to verify acctNo — replaces 2 separate queries

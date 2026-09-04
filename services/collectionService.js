@@ -45,8 +45,7 @@ export const SYSTEM_FIELDS = [
 ];
 
 /**
- * The `stage` system field. Kept OUT of SYSTEM_FIELDS (so the legacy field-position
- * logic for name/phone/email/responsible is untouched) but still an allowed lead field
+ * The `stage` system field. Kept out of SYSTEM_FIELDS but still an allowed lead field
  * and a selectable analytics axis. Stage values reference a per-collection stage id.
  */
 export const STAGE_FIELD = {
@@ -142,8 +141,7 @@ class CollectionService {
 
     /**
      * Get column definitions for a single collection.
-     * System fields are stored in the DB array (with system:true) so their position is persisted.
-     * For legacy collections that pre-date this, system fields are prepended on the fly.
+     * System fields are injected at read time and are not stored in the collection.
      */
     async getCollectionFields(acctId, collectionId) {
         const collection = await LeadCollection.findOne({ _id: collectionId, acctId }).lean();
@@ -153,15 +151,7 @@ class CollectionService {
             throw err;
         }
 
-        const storedFields   = collection.fields || [];
-        const systemFieldKeys = new Set(SYSTEM_FIELDS.map(f => f.field));
-
-        // If system fields are already stored (new behaviour) use as-is.
-        // Otherwise prepend them for backward compat with legacy documents.
-        const hasStoredSystem = storedFields.some(f => systemFieldKeys.has(f.field));
-        const fields = hasStoredSystem
-            ? storedFields
-            : [...SYSTEM_FIELDS, ...storedFields];
+        const fields = [...SYSTEM_FIELDS, ...(collection.fields || [])];
 
         return {
             _id:            collection._id,
@@ -205,11 +195,7 @@ class CollectionService {
             nextStageId:    2
         });
 
-        // Re-read to apply same logic as getCollectionFields
-        const storedFields    = collection.fields || [];
-        const systemFieldKeys = new Set(SYSTEM_FIELDS.map(f => f.field));
-        const hasStoredSystem = storedFields.some(f => systemFieldKeys.has(f.field));
-        const allFields = hasStoredSystem ? storedFields : [...SYSTEM_FIELDS, ...storedFields];
+        const allFields = [...SYSTEM_FIELDS, ...(collection.fields || [])];
 
         return {
             _id:            collection._id,
@@ -261,10 +247,7 @@ class CollectionService {
 
         await collection.save();
 
-        const storedFields    = collection.fields || [];
-        const systemFieldKeys = new Set(SYSTEM_FIELDS.map(f => f.field));
-        const hasStoredSystem = storedFields.some(f => systemFieldKeys.has(f.field));
-        const allFields = hasStoredSystem ? storedFields : [...SYSTEM_FIELDS, ...storedFields];
+        const allFields = [...SYSTEM_FIELDS, ...(collection.fields || [])];
 
         return {
             _id:            collection._id,
@@ -348,6 +331,10 @@ class CollectionService {
      */
     async findByName(acctId, collectionName) {
         return LeadCollection.findOne({ acctId, collectionName }).lean();
+    }
+
+    async findDefault(acctId) {
+        return LeadCollection.findOne({ acctId, default: true }).lean();
     }
 
     // ── Stage lifecycle ──────────────────────────────────────────────────────
@@ -519,15 +506,6 @@ class CollectionService {
         const result         = [];
 
         for (const f of fields) {
-            // System fields — pass through as-is preserving position
-            if (f.system && systemFieldMap.has(f.field)) {
-                if (!seen.has(f.field)) {
-                    seen.add(f.field);
-                    result.push({ ...systemFieldMap.get(f.field) });
-                }
-                continue;
-            }
-
             if (!f.label || typeof f.label !== 'string') continue;
 
             const label    = f.label.trim().slice(0, 100);

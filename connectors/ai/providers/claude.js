@@ -13,7 +13,7 @@ import { buildSystemPrompt, responseJsonSchema, formatHistoryForOpenAI } from '.
 /**
  * @param {string} message
  * @param {Array<{ role: 'user'|'assistant', text: string }>} history
- * @param {Array<{ _id: string, collectionName: string, fields: string[] }>} collectionsWithFields
+ * @param {Array<{ _id: string, collectionName: string, fields: Array<{field: string, label: string, type: string}> }>} collectionsWithFields
  * @returns {Promise<object>}
  */
 export async function generateAnalyticsCharts(message, history = [], collectionsWithFields = []) {

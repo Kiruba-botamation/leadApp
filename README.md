@@ -40,8 +40,8 @@ npm run dev
 - `GET /api/leads` - Get all leads with pagination
 
 ### Analytics
-- `GET /api/analytics/chart-data` - Get chart data with grouping and aggregation
+- `POST /api/ui/analytics/chart-data` - Get chart data with grouping and aggregation
 
 ### SSO/Auth
-- `GET /api/sso/...` - SSO authentication endpoints
+- `/api/ui/sso/...` - SSO authentication endpoints
 - `GET /login` - SSO login redirect

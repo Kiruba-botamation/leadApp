@@ -5,7 +5,6 @@ import acctDataModel from '../models/accountModel.js';
 import accountApiKeyModel from '../models/accountApiKeyModel.js';
 import UserAccount from '../models/userAccountModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
-import Lead from '../models/leadModel.js';
 import LeadCollection from '../models/leadCollectionModel.js';
 import LeadNote from '../models/leadNoteModel.js';
 import LeadReminder from '../models/leadReminderModel.js';
@@ -613,12 +612,6 @@ export const deleteAccount = async (req, res) => {
             await collectionService.deleteCollection(acctId, collection._id);
         }
 
-        // Clean up legacy collection-less leads and any dependents not covered by a collection.
-        while (true) {
-            const leads = await Lead.find({ acctId }, { _id: 1 }).limit(100).lean();
-            if (!leads.length) break;
-            for (const lead of leads) await leadService.deleteLead(lead._id, acctId);
-        }
         while (true) {
             const reminders = await LeadReminder.find({ acctId }, { _id: 1 }).limit(200).lean();
             if (!reminders.length) break;

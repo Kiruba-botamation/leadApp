@@ -253,11 +253,8 @@ const handleRpc = async (msg, req) => {
 
             if (args.acctId) {
                 const acctId = String(args.acctId).trim();
-                const outerAcctIds = [req.query?.acctId, req.headers?.['x-acctno'], req.headers?.['x-acct-id']]
-                    .filter(value => value !== undefined && value !== null)
-                    .map(String)
-                    .map(value => value.trim());
-                if (!acctId || outerAcctIds.some(value => value !== acctId)) {
+                const tenantAcctId = req.query?.acctId ? String(req.query.acctId).trim() : '';
+                if (!acctId || acctId !== tenantAcctId) {
                     return rpcResult(id, {
                         content: [{ type: 'text', text: 'Error: Conflicting or invalid acctId values were provided' }],
                         isError: true

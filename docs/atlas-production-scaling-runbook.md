@@ -109,7 +109,6 @@ $env:CREATE_INDEXES_CONFIRM='CREATE_MISSING_INDEXES'
 npm run migrate:create-indexes
 ```
 
-Run `scripts/migrateAdminIndexes.js` first when legacy admin records still need normalized-field backfill or uniqueness validation.
 
 ## Atlas Search boundary
 

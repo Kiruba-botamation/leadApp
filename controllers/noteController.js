@@ -16,7 +16,7 @@ class NoteController {
     async getNotes(req, res) {
         try {
             const { leadId }   = req.params;
-            const acctId       = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
 
             if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
 
@@ -27,9 +27,8 @@ class NoteController {
             return res.status(200).json({
                 success: true,
                 data: result.items,
-                nextCursor: result.nextCursor,
-                hasMore: result.hasMore,
-                limit: result.limit,
+                pageInfo: { nextCursor: result.nextCursor, hasNextPage: result.hasMore },
+                total: null,
             });
         } catch (err) {
             console.error('[NoteController] getNotes:', err);
@@ -45,7 +44,7 @@ class NoteController {
     async createNote(req, res) {
         try {
             const { leadId }    = req.params;
-            const acctId        = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
             const userId        = req.user?.userId;
             const { description } = req.body;
 
@@ -72,7 +71,7 @@ class NoteController {
         try {
             const { leadId, noteId } = req.params;
             const userId        = req.user?.userId;
-            const acctId        = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const acctId = req.tenant.acctId;
             const isSuperadmin  = req.user?.accessLevel === 'superadmin';
             const { description } = req.body;
 
@@ -102,7 +101,7 @@ class NoteController {
         try {
             const { leadId, noteId } = req.params;
             const userId     = req.user?.userId;
-            const acctId     = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const acctId = req.tenant.acctId;
             const isSuperadmin = req.user?.accessLevel === 'superadmin';
 
             if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
@@ -127,7 +126,7 @@ class NoteController {
      */
     async getBatchCounts(req, res) {
         try {
-            const acctId     = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
             const { leadIds } = req.body;
 
             if (!acctId)            return res.status(400).json({ success: false, message: 'Account context required' });
@@ -151,7 +150,7 @@ class NoteController {
      */
     async getCombinedBatchCounts(req, res) {
         try {
-            const acctId     = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
             const { leadIds } = req.body;
 
             if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });

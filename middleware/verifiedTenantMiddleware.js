@@ -10,23 +10,8 @@ const scalarAccountId = (value, source) => {
     return normalized;
 };
 
-/** Resolve and compare every supported account-id source; never pick a winner. */
 export const resolveCanonicalAcctId = (req) => {
-    const supplied = [
-        ['query', req.query?.acctId],
-        ['body', req.body?.acctId],
-        ['x-acctno header', req.headers?.['x-acctno']],
-        ['x-acct-id header', req.headers?.['x-acct-id']],
-        ['path', req.params?.acctId]
-    ].map(([source, value]) => scalarAccountId(value, source)).filter(Boolean);
-
-    if (!supplied.length) return null;
-    if (new Set(supplied).size !== 1) {
-        const error = new Error('Conflicting acctId values were provided');
-        error.code = 'ACCT_ID_CONFLICT';
-        throw error;
-    }
-    return supplied[0];
+    return scalarAccountId(req.query?.acctId, 'query');
 };
 
 const setReadonly = (target, property, value) => {
@@ -68,7 +53,6 @@ export const verifiedTenantMiddleware = async (req, res, next) => {
 
         req.tenant = Object.freeze({ acctId });
         setReadonly(req, 'acctId', acctId);
-        setReadonly(req.user, 'acctId', acctId);
         setReadonly(req.user, 'isAdmin', true);
         setReadonly(req.user, 'accessLevel', membership.accessLevel);
         return next();

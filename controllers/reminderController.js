@@ -19,7 +19,7 @@ class ReminderController {
     async getReminders(req, res) {
         try {
             const { leadId } = req.params;
-            const acctId = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
 
             if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
 
@@ -32,9 +32,8 @@ class ReminderController {
             return res.status(200).json({
                 success: true,
                 data: result.items,
-                nextCursor: result.nextCursor,
-                hasMore: result.hasMore,
-                limit: result.limit,
+                pageInfo: { nextCursor: result.nextCursor, hasNextPage: result.hasMore },
+                total: null,
             });
         } catch (err) {
             console.error('[ReminderController] getReminders:', err);
@@ -49,7 +48,7 @@ class ReminderController {
     async createReminder(req, res) {
         try {
             const { leadId } = req.params;
-            const acctId = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
             const userId = req.user?.userId;
             const {
                 description, scheduledAt,
@@ -129,7 +128,7 @@ class ReminderController {
             const { leadId, reminderId } = req.params;
             const updates = req.body;
             const userId = req.user?.userId;
-            const acctId = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const acctId = req.tenant.acctId;
             const isSuperadmin = req.user?.accessLevel === 'superadmin';
 
             if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
@@ -205,7 +204,7 @@ class ReminderController {
         try {
             const { leadId, reminderId } = req.params;
             const userId         = req.user?.userId;
-            const acctId         = req.query.acctId || req.headers['x-acctno'] || req.body?.acctId;
+            const acctId = req.tenant.acctId;
             const isSuperadmin   = req.user?.accessLevel === 'superadmin';
 
             if (!acctId) return res.status(400).json({ success: false, message: 'Account context required' });
@@ -230,7 +229,7 @@ class ReminderController {
     async getFiredReminders(req, res) {
         try {
             const userId = req.user?.userId;
-            const acctId = req.query.acctId || req.headers['x-acctno'] || null;
+            const acctId = req.tenant.acctId;
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
             const page = Math.min(1000, Math.max(1, parseInt(req.query.page, 10) || 1));
@@ -260,7 +259,7 @@ class ReminderController {
      */
     async getCalendarReminders(req, res) {
         try {
-            const acctId = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
             const userId = req.user?.userId;
             const { start, end } = req.query;
 
@@ -288,7 +287,7 @@ class ReminderController {
     async markRead(req, res) {
         try {
             const userId = req.user?.userId;
-            const acctId = req.query.acctId || req.headers['x-acctno'] || null;
+            const acctId = req.tenant.acctId;
             const { reminderIds } = req.body;
 
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
@@ -309,7 +308,7 @@ class ReminderController {
         try {
             const { reminderId } = req.params;
             const userId = req.user?.userId;
-            const acctId = req.query.acctId || req.headers['x-acctno'] || null;
+            const acctId = req.tenant.acctId;
             if (!userId) return res.status(400).json({ success: false, message: 'User identity required' });
 
             await reminderService.deleteFiredReminder(reminderId, userId, acctId);
@@ -326,7 +325,7 @@ class ReminderController {
      */
     async getBatchReminderCounts(req, res) {
         try {
-            const acctId = req.query.acctId || req.headers['x-acctno'];
+            const acctId = req.tenant.acctId;
             const userId = req.user?.userId;
             const { leadIds } = req.body;
 

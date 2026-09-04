@@ -7,12 +7,8 @@ const withTimeout = (promise, ms, message) =>
     Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
 
 class LeadController {
-    /** Resolve the caller's acctId from the request.
-     * acctId is never stored on req.user — it always comes from the request
-     * so that account switching in the UI always works correctly.
-     */
     async _resolveAcctId(req) {
-        return req.query.acctId || req.body?.acctId || req.headers['x-acctno'] || req.acctId || null;
+        return req.tenant?.acctId || req.acctId || null;
     }
 
     /**
@@ -32,7 +28,7 @@ class LeadController {
                 return res.status(400).json({ success: false, message: 'Authenticated account context is required' });
             }
 
-            const collection   = req.params.collection || req.query.collection || null;
+            const collection = req.params.collection || null;
             const mergeProperties = req.body?.config?.merge?.properties ?? null;
 
             // Strip routing-only fields from the payload
@@ -87,8 +83,7 @@ class LeadController {
     async getAllLeads(req, res) {
         try {
             const {
-                page, limit, sortBy, sortOrder, search,
-                acctId: acctIdQuery,
+                limit, sortBy, sortOrder, search,
                 collectionId,
                 fieldFilters,
                 responsibleFilter,
@@ -97,7 +92,7 @@ class LeadController {
                 fields
             } = req.query;
 
-            const acctId = acctIdQuery || req.headers['x-acctno'] || req.acctId;
+            const acctId = req.tenant?.acctId;
             if (!acctId) {
                 return res.status(400).json({ success: false, message: 'acctId is required' });
             }
@@ -108,7 +103,6 @@ class LeadController {
             const sortOrderVal = sortOrder === 'asc' ? 1 : sortOrder === 'desc' ? -1 : (sortOrder ? Number(sortOrder) : -1);
 
             const result = await leadService.getAllLeads({
-                page:         page ?? 1,
                 limit:        limit ?? 10,
                 sortBy:       sortBy || 'updatedAt',
                 sortOrder:    sortOrderVal,
@@ -118,7 +112,7 @@ class LeadController {
                 fieldFilters,
                 responsibleFilter,
                 cursor,
-                includeCount: includeCount === 'true' || page !== undefined,
+                includeCount: includeCount === 'true',
                 requestedFields: fields,
                 // Per-admin visibility — superadmins see all, others see only their assigned leads
                 accessLevel:  req.user?.accessLevel ?? null,
@@ -165,8 +159,7 @@ class LeadController {
                 return res.status(400).json({ success: false, message: 'Authenticated account context is required' });
             }
 
-            const rawBody = req.body?.data ?? req.body;
-            const { acctId: _a, acctNo: _n, ...updateData } = rawBody || {};
+            const updateData = req.body;
             if (!updateData || Object.keys(updateData).length === 0) {
                 return res.status(400).json({ success: false, message: 'No update data provided' });
             }
