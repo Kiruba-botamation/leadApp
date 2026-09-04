@@ -43,6 +43,12 @@ export const SYSTEM_FIELDS = [
         tooltip:  'Optional — represents the assignee of the lead'
     }
 ];
+const SYSTEM_FIELD_KEYS = new Set(SYSTEM_FIELDS.map(field => field.field));
+
+const withSystemFields = (fields = []) => [
+    ...SYSTEM_FIELDS,
+    ...fields.filter(field => !SYSTEM_FIELD_KEYS.has(field.field))
+];
 
 /**
  * The `stage` system field. Kept out of SYSTEM_FIELDS but still an allowed lead field
@@ -151,7 +157,7 @@ class CollectionService {
             throw err;
         }
 
-        const fields = [...SYSTEM_FIELDS, ...(collection.fields || [])];
+        const fields = withSystemFields(collection.fields);
 
         return {
             _id:            collection._id,
@@ -195,7 +201,7 @@ class CollectionService {
             nextStageId:    2
         });
 
-        const allFields = [...SYSTEM_FIELDS, ...(collection.fields || [])];
+        const allFields = withSystemFields(collection.fields);
 
         return {
             _id:            collection._id,
@@ -247,7 +253,7 @@ class CollectionService {
 
         await collection.save();
 
-        const allFields = [...SYSTEM_FIELDS, ...(collection.fields || [])];
+        const allFields = withSystemFields(collection.fields);
 
         return {
             _id:            collection._id,
@@ -501,7 +507,6 @@ class CollectionService {
             throw err;
         }
 
-        const systemFieldMap = new Map(SYSTEM_FIELDS.map(f => [f.field, f]));
         const seen           = new Set();
         const result         = [];
 
@@ -513,7 +518,7 @@ class CollectionService {
             const type     = ['text', 'number', 'date', 'boolean'].includes(f.type) ? f.type : 'text';
 
             if (!fieldKey) continue;
-            if (systemFieldMap.has(fieldKey)) continue; // ignore collision with system keys
+            if (SYSTEM_FIELD_KEYS.has(fieldKey)) continue;
             if (seen.has(fieldKey)) continue;
 
             seen.add(fieldKey);

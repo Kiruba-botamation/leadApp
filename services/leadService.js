@@ -28,6 +28,41 @@ const MAX_LEAD_DOCUMENT_BYTES = 512 * 1024;
 const MERGE_WRITE_BATCH_SIZE = 100;
 const LEAD_QUERY_MAX_TIME_MS = Number.parseInt(process.env.LEAD_QUERY_MAX_TIME_MS || '5000', 10);
 
+const identifierValue = value => value === undefined || value === null ? '' : String(value).trim();
+
+export function resolveResponsibleUserIds(admins, identifiers) {
+    const byChatbotAdminId = new Map();
+    const byAdminId = new Map();
+    const byUserId = new Map();
+
+    for (const admin of admins) {
+        if (identifierValue(admin.chatbotAdminId)) byChatbotAdminId.set(identifierValue(admin.chatbotAdminId), admin.userId);
+        if (identifierValue(admin._id)) byAdminId.set(identifierValue(admin._id), admin.userId);
+        if (identifierValue(admin.userId)) byUserId.set(identifierValue(admin.userId), admin.userId);
+    }
+
+    return new Map(identifiers.map(identifier => {
+        const id = identifierValue(identifier);
+        return [id, byChatbotAdminId.get(id) ?? byAdminId.get(id) ?? byUserId.get(id)];
+    }));
+}
+
+async function findResponsibleUserIds(acctId, identifiers) {
+    const ids = [...new Set(identifiers.map(identifierValue).filter(Boolean))];
+    if (!ids.length) return new Map();
+
+    const admins = await AccountAdmin.find({
+        acctId,
+        $or: [
+            { chatbotAdminId: { $in: ids } },
+            { _id: { $in: ids } },
+            { userId: { $in: ids } }
+        ]
+    }, { chatbotAdminId: 1, userId: 1 }).lean();
+
+    return resolveResponsibleUserIds(admins, ids);
+}
+
 function requestError(message, statusCode = 400) {
     const error = new Error(message);
     error.statusCode = statusCode;
@@ -87,7 +122,6 @@ class LeadService {
             for (const property of mergeProperties) assertSafeFieldKey(property, allowedFields, 'merge property');
         }
 
-        const identifierValue = value => value === undefined || value === null ? '' : String(value).trim();
         const hasIdentifier = value => identifierValue(value) !== '';
         const responsibleIds = new Set();
 
@@ -95,18 +129,14 @@ class LeadService {
             if (hasIdentifier(item.responsible)) responsibleIds.add(identifierValue(item.responsible));
         }
 
-        const admins = responsibleIds.size
-            ? await AccountAdmin.find({ acctId, userId: { $in: [...responsibleIds] } }, { userId: 1 }).lean()
-            : [];
-
-        const userIdByUserId = new Map(admins.map(admin => [String(admin.userId), admin.userId]));
+        const responsibleUserIds = await findResponsibleUserIds(acctId, [...responsibleIds]);
 
         for (const item of items) {
             if (hasIdentifier(item.responsible)) {
                 const id = identifierValue(item.responsible);
-                const userId = userIdByUserId.get(id);
+                const userId = responsibleUserIds.get(id);
                 if (!userId) {
-                    const err = new Error(`No admin found for responsible userId "${id}" in this account.`);
+                    const err = new Error(`No admin found for responsible identifier "${id}" in this account.`);
                     err.statusCode = 400;
                     throw err;
                 }
@@ -395,10 +425,11 @@ class LeadService {
         let nextResponsible = null;
 
         if (hasResponsible && !unassigning) {
-            const admin = await AccountAdmin.findOne({ acctId, userId: data.responsible }, { userId: 1 }).lean();
-            if (!admin) throw requestError('Responsible admin does not belong to this account');
-            nextResponsible = admin.userId;
-            data.responsible = admin.userId;
+            const id = identifierValue(data.responsible);
+            const responsibleUserIds = await findResponsibleUserIds(acctId, [id]);
+            nextResponsible = responsibleUserIds.get(id);
+            if (!nextResponsible) throw requestError('Responsible admin does not belong to this account');
+            data.responsible = nextResponsible;
         }
 
         // Stage transition detection. Coerce to Number so leads store a numeric
