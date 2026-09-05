@@ -59,13 +59,25 @@ const resolveAcctNo = async (acctId) => {
 };
 
 /** Normalise a single Botamation admin payload to the fields we mirror locally. */
-export const normaliseBotamationAdmin = (a) => ({
-    chatbotAdminId: a.adminId ?? null,
-    firstName: a.firstName ?? null,
-    lastName: a.lastName ?? null,
-    phone: a.phone ?? null,
-    profileImage: a.profileImage ?? null
-});
+export const normaliseBotamationAdmin = (admin = {}) => {
+    const fullName = admin.name ?? admin.fullName ?? admin.full_name ?? null;
+    const nameParts = typeof fullName === 'string' ? fullName.trim().split(/\s+/).filter(Boolean) : [];
+
+    return {
+        chatbotAdminId: admin.adminId ?? admin.admin_id ?? admin.chatbotAdminId ?? admin.chatbot_admin_id ?? admin.id ?? null,
+        firstName: admin.firstName ?? admin.first_name ?? nameParts[0] ?? null,
+        lastName: admin.lastName ?? admin.last_name ?? (nameParts.length > 1 ? nameParts.slice(1).join(' ') : null),
+        phone: admin.phone ?? admin.phoneNumber ?? admin.phone_number ?? admin.mobile ?? null,
+        profileImage: admin.profileImage ?? admin.profile_image ?? admin.profileImageUrl
+            ?? admin.profile_image_url ?? admin.profilePic ?? admin.profile_pic
+            ?? admin.avatar ?? admin.photo ?? null
+    };
+};
+
+export const isAdminMissingFromPlatform = (admin, externalIds) => {
+    const id = admin.chatbotAdminId ? String(admin.chatbotAdminId).trim().toLowerCase() : null;
+    return Boolean(id && !externalIds.has(id));
+};
 
 /**
  * Sync admins for an account against the Botamation platform — matched by
@@ -104,8 +116,10 @@ export const syncAdminsFromPlatform = async (acctId) => {
         afterId = batch[batch.length - 1]._id;
 
         for (const admin of batch) {
-            const id = admin.chatbotAdminId ? String(admin.chatbotAdminId).trim().toLowerCase() : null;
-            if (id && externalIds.has(id)) continue;
+            // Without an external id there is no reliable way to prove that this
+            // linked admin was removed from Botamation. Preserve the link rather
+            // than treating an unmatchable record as stale.
+            if (!isAdminMissingFromPlatform(admin, externalIds)) continue;
 
             const deletion = await AccountAdmin.deleteOne({ _id: admin._id, acctId });
             if (!deletion.deletedCount) continue;

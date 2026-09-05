@@ -129,9 +129,12 @@ export const verifyAccount = async (req, res) => {
                             const n = normaliseBotamationAdmin(matchedAdmin);
                             const resolvedEmail = email || req.user?.email || null;
 
-                            const existingAdmin = n.chatbotAdminId
+                            let existingAdmin = n.chatbotAdminId
                                 ? await AccountAdmin.findOne({ acctId, chatbotAdminId: n.chatbotAdminId })
-                                : await AccountAdmin.findOne({ acctId, userId });
+                                : null;
+                            if (!existingAdmin) {
+                                existingAdmin = await AccountAdmin.findOne({ acctId, userId });
+                            }
 
                             if (existingAdmin) {
                                 const previousUserId = existingAdmin.userId;
@@ -419,13 +422,17 @@ export const accountLinkToUser = async (req, res) => {
         }
 
         const normalizedAdmin = normaliseBotamationAdmin(matchedAdmin);
-        const existingAdmin = normalizedAdmin.chatbotAdminId
+        let existingAdmin = normalizedAdmin.chatbotAdminId
             ? await AccountAdmin.findOne({ acctId, chatbotAdminId: normalizedAdmin.chatbotAdminId })
-            : await AccountAdmin.findOne({ acctId, userId });
+            : null;
+        if (!existingAdmin) {
+            existingAdmin = await AccountAdmin.findOne({ acctId, userId });
+        }
         if (existingAdmin) {
             existingAdmin.userId = userId;
             existingAdmin.email = authenticatedEmail;
             existingAdmin.phone = userData.userData.phone || existingAdmin.phone || null;
+            if (normalizedAdmin.chatbotAdminId) existingAdmin.chatbotAdminId = normalizedAdmin.chatbotAdminId;
             existingAdmin.firstName = normalizedAdmin.firstName;
             existingAdmin.lastName = normalizedAdmin.lastName;
             existingAdmin.profileImage = normalizedAdmin.profileImage;
