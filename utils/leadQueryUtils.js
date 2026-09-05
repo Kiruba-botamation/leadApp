@@ -112,7 +112,9 @@ export function parseFieldFilters(raw, allowedFields, fieldTypes) {
         if (definition.type !== type && !(key === 'stage' && definition.type === 'number')) {
             throw badRequest(`Filter type for "${key}" must be "${type}"`);
         }
-        query[key] = buildFilterCondition(definition, key);
+        query[key] = key === 'stage' && definition.type === 'text'
+            ? { $eq: definition.value }
+            : buildFilterCondition(definition, key);
     }
     return query;
 }

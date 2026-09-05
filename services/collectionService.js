@@ -154,7 +154,36 @@ function normaliseColor(color) {
 
 /** Stages sorted by display order (tiebreak: lowest id). */
 function sortStages(stages = []) {
-    return [...stages].sort((a, b) => (a.order - b.order) || (a.id - b.id));
+    return [...stages].sort((a, b) => (a.order - b.order) || String(a.id).localeCompare(String(b.id)));
+}
+
+export const stageIdKey = id => String(id ?? '').trim().toLowerCase();
+
+export function normaliseCustomStageId(id) {
+    const value = String(id ?? '').trim();
+    if (!/^[A-Za-z0-9]{1,64}$/.test(value)) {
+        const err = new Error('Stage ID must contain only letters and numbers (maximum 64 characters)');
+        err.statusCode = 400;
+        throw err;
+    }
+    if (value.toLowerCase() === 'reorder') {
+        const err = new Error('Stage ID "reorder" is reserved');
+        err.statusCode = 400;
+        throw err;
+    }
+    return value;
+}
+
+export const resolveStageId = (stages, id) => stages.find(stage => stageIdKey(stage.id) === stageIdKey(id))?.id;
+
+export function generateStageId(name, stages = []) {
+    const baseId = String(name).replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 64) || 'STAGE';
+    let id = baseId;
+    let suffix = 2;
+    while (stages.some(stage => stageIdKey(stage.id) === stageIdKey(id))) {
+        id = `${baseId.slice(0, 64 - String(suffix).length)}${suffix++}`;
+    }
+    return id;
 }
 
 /** Normalise a collection name: lowercase, spaces → underscore, strip non-alphanumeric-underscore */
@@ -421,7 +450,7 @@ class CollectionService {
     }
 
     /** Add a stage to a collection. Returns the updated, sorted stage list. */
-    async addStage(acctId, collectionId, { name, color } = {}) {
+    async addStage(acctId, collectionId, { id: requestedId, name, color } = {}) {
         const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
         const trimmed = (name || '').trim();
@@ -432,23 +461,29 @@ class CollectionService {
         }
         this._assertStageNameUnique(collection.stages, trimmed);
 
-        const id    = collection.nextStageId || ((Math.max(0, ...collection.stages.map(s => s.id)) ) + 1);
+        let id;
+        if (requestedId === undefined || requestedId === null || requestedId === '') {
+            id = generateStageId(trimmed, collection.stages);
+        } else {
+            id = normaliseCustomStageId(requestedId);
+        }
+        this._assertStageIdUnique(collection.stages, id);
         const order = collection.stages.length
             ? Math.max(...collection.stages.map(s => s.order)) + 1
             : 0;
 
         collection.stages.push({ id, name: trimmed, color: normaliseColor(color), order });
-        collection.nextStageId = id + 1;
         await collection.save();
 
         return sortStages(collection.stages);
     }
 
     /** Update a stage's name / colour / order. Returns the updated, sorted stage list. */
-    async updateStage(acctId, collectionId, stageId, { name, color, order } = {}) {
+    async updateStage(acctId, collectionId, stageId, { id: requestedId, name, color, order } = {}) {
         const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
-        const stage = collection.stages.find(s => s.id === Number(stageId));
+        const currentId = resolveStageId(collection.stages, stageId);
+        const stage = collection.stages.find(s => s.id === currentId);
         if (!stage) {
             const err = new Error('Stage not found');
             err.statusCode = 404;
@@ -468,7 +503,17 @@ class CollectionService {
         if (color !== undefined) stage.color = normaliseColor(color);
         if (order !== undefined && !Number.isNaN(Number(order))) stage.order = Number(order);
 
+        let nextId = currentId;
+        if (requestedId !== undefined && stageIdKey(requestedId) !== stageIdKey(currentId)) {
+            nextId = normaliseCustomStageId(requestedId);
+            this._assertStageIdUnique(collection.stages, nextId, currentId);
+            stage.id = nextId;
+        }
+
         await collection.save();
+        if (nextId !== currentId) {
+            await Lead.updateMany({ acctId, collectionId, stage: currentId }, { $set: { stage: nextId } });
+        }
         return sortStages(collection.stages);
     }
 
@@ -476,9 +521,9 @@ class CollectionService {
     async reorderStages(acctId, collectionId, orderedIds = []) {
         const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
-        const position = new Map(orderedIds.map((id, idx) => [Number(id), idx]));
+        const position = new Map(orderedIds.map((id, idx) => [stageIdKey(id), idx]));
         collection.stages.forEach(s => {
-            if (position.has(s.id)) s.order = position.get(s.id);
+            if (position.has(stageIdKey(s.id))) s.order = position.get(stageIdKey(s.id));
         });
 
         await collection.save();
@@ -495,8 +540,8 @@ class CollectionService {
     async deleteStage(acctId, collectionId, stageId) {
         const collection = await this._loadCollectionForStageEdit(acctId, collectionId);
 
-        const id = Number(stageId);
-        if (!collection.stages.some(s => s.id === id)) {
+        const id = resolveStageId(collection.stages, stageId);
+        if (id === undefined) {
             const err = new Error('Stage not found');
             err.statusCode = 404;
             throw err;
@@ -546,6 +591,15 @@ class CollectionService {
         const clash = stages.some(s => s.id !== exceptId && s.name.toLowerCase() === lower);
         if (clash) {
             const err = new Error(`A stage named "${name}" already exists in this collection`);
+            err.statusCode = 409;
+            throw err;
+        }
+    }
+
+    _assertStageIdUnique(stages, id, exceptId = null) {
+        const key = stageIdKey(id);
+        if (stages.some(stage => stage.id !== exceptId && stageIdKey(stage.id) === key)) {
+            const err = new Error(`Stage ID "${id}" already exists in this collection`);
             err.statusCode = 409;
             throw err;
         }

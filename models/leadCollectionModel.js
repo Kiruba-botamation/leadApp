@@ -17,7 +17,7 @@ const columnDefSchema = new mongoose.Schema(
 
 /**
  * Lead stage (pipeline step) embedded in a collection.
- * id    — stable integer id, assigned from the collection's nextStageId counter and NEVER reused.
+ * id    — unique numeric or alphanumeric id. Existing numeric ids remain supported.
  *         Leads reference this id; reordering changes `order`, never `id`.
  * name  — display name (e.g. "New", "In Progress"). Unique (case-insensitive) within a collection.
  * color — hex colour chosen by the admin, used for the grid pill.
@@ -25,7 +25,7 @@ const columnDefSchema = new mongoose.Schema(
  */
 const stageSchema = new mongoose.Schema(
     {
-        id:    { type: Number, required: true },
+        id:    { type: mongoose.Schema.Types.Mixed, required: true },
         name:  { type: String, required: true },
         color: { type: String, default: '#4f46e5' },
         order: { type: Number, required: true }

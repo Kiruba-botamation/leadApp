@@ -43,3 +43,12 @@ test('field filters reject malformed JSON, unsafe keys, and unknown operators', 
     assert.throws(() => parseFieldFilters('{"$where":{"type":"text","value":"x"}}', allowed, types), /Invalid filter key/);
     assert.throws(() => parseFieldFilters('{"score":{"type":"number","op":"wat","value":1}}', allowed, types), /Unsupported number operator/);
 });
+
+test('alphanumeric stage filters use exact matching', () => {
+    const filter = parseFieldFilters(
+        '{"stage":{"type":"text","value":"QUALIFIED2"}}',
+        new Set(['stage']),
+        new Map([['stage', 'text']])
+    );
+    assert.deepEqual(filter, { stage: { $eq: 'QUALIFIED2' } });
+});

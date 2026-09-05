@@ -73,7 +73,7 @@ async function prepareInput(raw, scope) {
         { fields: 1 }
     ).lean();
     if (!collection) throw requestError('Collection not found', 404);
-    const definitions = [...SYSTEM_FIELDS, { ...STAGE_FIELD, type: 'number' }, ...(collection.fields || []),
+    const definitions = [...SYSTEM_FIELDS, { ...STAGE_FIELD, type: 'text' }, ...(collection.fields || []),
         { field: 'createdAt', label: 'Created At', type: 'date' },
         { field: 'updatedAt', label: 'Updated At', type: 'date' }];
     const definitionByField = new Map(definitions.map(item => [item.field, item]));

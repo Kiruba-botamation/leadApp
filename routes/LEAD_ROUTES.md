@@ -4,6 +4,11 @@ Base paths:
 - **External API:** `/api/leads` — authenticated via `x-api-key` header
 - **Browser / SSO:** `/api/ui/leads` — authenticated via `access_token` cookie (JWT)
 
+Pipeline stage IDs:
+- The optional `stage` field accepts the unique stage ID configured for the target collection.
+- IDs may be legacy numbers such as `1`, or alphanumeric strings such as `NEW` and `followup2`.
+- Custom IDs contain only letters and numbers and are unique within a collection, case-insensitively.
+
 ---
 
 ## POST `/api/leads` — Create lead(s)

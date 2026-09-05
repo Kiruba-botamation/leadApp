@@ -117,7 +117,7 @@ class LeadService {
         ]);
 
         // Stage resolution: valid ids, the default (first) stage, and id→name for events.
-        const stageIds        = new Set((collectionDoc.stages || []).map(s => s.id));
+        const stageIds        = new Map((collectionDoc.stages || []).map(s => [String(s.id).toLowerCase(), s.id]));
         const defaultStageId  = collectionService.getFirstStageId(collectionDoc);
         const stageNameById   = new Map((collectionDoc.stages || []).map(s => [s.id, s.name]));
 
@@ -166,10 +166,10 @@ class LeadService {
             }
 
             // A supplied stage must be one of the collection's stage ids.
-            if (hasStageValue(item.stage) && !stageIds.has(Number(item.stage))) {
+            if (hasStageValue(item.stage) && !stageIds.has(String(item.stage).trim().toLowerCase())) {
                 const err = new Error(
                     `Unknown stage "${item.stage}" for collection "${collectionName}". ` +
-                    `Use one of: ${[...stageIds].join(', ') || '(none)'}.`
+                    `Use one of: ${[...stageIds.values()].join(', ') || '(none)'}.`
                 );
                 err.statusCode = 400;
                 throw err;
@@ -191,7 +191,7 @@ class LeadService {
         // Default the stage to the collection's first stage when omitted; coerce to Number.
         const addMeta = (item) => {
             const meta = { ...item, acctId, collectionId };
-            const sid = hasStageValue(item.stage) ? Number(item.stage) : defaultStageId;
+            const sid = hasStageValue(item.stage) ? stageIds.get(String(item.stage).trim().toLowerCase()) : defaultStageId;
             if (sid !== null && sid !== undefined) meta.stage = sid;
             return meta;
         };
@@ -296,7 +296,7 @@ class LeadService {
 
         const fieldTypes = new Map([
             ...SYSTEM_FIELDS.map(field => [field.field, field.type]),
-            [STAGE_FIELD.field, 'number'],
+            [STAGE_FIELD.field, 'text'],
             ...configuredFields.map(field => [field.field, field.type]),
             ['createdAt', 'date'],
             ['updatedAt', 'date'],
@@ -437,17 +437,20 @@ class LeadService {
             data.responsible = nextResponsible;
         }
 
-        // Stage transition detection. Coerce to Number so leads store a numeric
-        // stage id (the grid filters by number) and comparisons are reliable.
+        // Resolve against the stored stage value so legacy numeric and custom
+        // alphanumeric IDs are both persisted with their canonical type/casing.
         const hasStage  = Object.prototype.hasOwnProperty.call(data, 'stage');
-        const prevStageNum = (prevStage === null || prevStage === undefined || prevStage === '') ? null : Number(prevStage);
-        let   nextStageNum = null;
+        const stagesById = new Map((collectionDoc.stages || []).map(stage => [String(stage.id).toLowerCase(), stage.id]));
+        const previousStageId = (prevStage === null || prevStage === undefined || prevStage === '')
+            ? null : stagesById.get(String(prevStage).trim().toLowerCase()) ?? prevStage;
+        let nextStageId = null;
         if (hasStage) {
-            nextStageNum = (data.stage === null || data.stage === undefined || data.stage === '') ? null : Number(data.stage);
-            if (nextStageNum !== null && !(collectionDoc.stages || []).some(stage => stage.id === nextStageNum)) {
+            nextStageId = (data.stage === null || data.stage === undefined || data.stage === '')
+                ? null : stagesById.get(String(data.stage).trim().toLowerCase());
+            if (nextStageId === undefined) {
                 throw requestError('Unknown stage for this collection');
             }
-            if (nextStageNum !== null) data.stage = nextStageNum;
+            if (nextStageId !== null) data.stage = nextStageId;
         }
 
         let doc;
@@ -475,15 +478,15 @@ class LeadService {
         }
 
         // Emit a stage-change event when the lead actually moves to a different stage.
-        if (hasStage && nextStageNum !== null && prevStageNum !== nextStageNum) {
+        if (hasStage && nextStageId !== null && String(previousStageId) !== String(nextStageId)) {
             const stageMap = collectionId ? await collectionService.resolveStageMap(acctId, collectionId) : {};
             emitEvent(EVENTS.LEAD_STAGE_CHANGED, {
                 acctId,
                 collectionId: evtCollectionId,
                 data: {
                     leadId:   id,
-                    previous: prevStageNum === null ? null : { id: prevStageNum, name: stageMap[prevStageNum] ?? null },
-                    current:  { id: nextStageNum, name: stageMap[nextStageNum] ?? null },
+                    previous: previousStageId === null ? null : { id: previousStageId, name: stageMap[previousStageId] ?? null },
+                    current:  { id: nextStageId, name: stageMap[nextStageId] ?? null },
                     lead:     doc
                 }
             });

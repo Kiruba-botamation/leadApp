@@ -111,7 +111,7 @@ class CollectionController {
 
     /**
      * POST /api/ui/leads/collections/:collectionId/stages
-     * Body: { name, color? }
+     * Body: { id?, name, color? }
      */
     async addStage(req, res) {
         try {
@@ -119,8 +119,8 @@ class CollectionController {
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
             const { collectionId } = req.params;
-            const { name, color } = req.body;
-            const stages = await collectionService.addStage(acctId, collectionId, { name, color });
+            const { id, name, color } = req.body;
+            const stages = await collectionService.addStage(acctId, collectionId, { id, name, color });
             return res.status(201).json({ success: true, message: 'Stage added', data: stages });
         } catch (error) {
             console.error('[CollectionController] addStage:', error);
@@ -130,7 +130,7 @@ class CollectionController {
 
     /**
      * PUT /api/ui/leads/collections/:collectionId/stages/reorder
-     * Body: { orderedIds: [Number] }
+     * Body: { orderedIds: [Number|String] }
      */
     async reorderStages(req, res) {
         try {
@@ -149,7 +149,7 @@ class CollectionController {
 
     /**
      * PUT /api/ui/leads/collections/:collectionId/stages/:stageId
-     * Body: { name?, color?, order? }
+     * Body: { id?, name?, color?, order? }
      */
     async updateStage(req, res) {
         try {
@@ -157,8 +157,8 @@ class CollectionController {
             if (!acctId) return res.status(400).json({ success: false, message: 'acctId is required' });
 
             const { collectionId, stageId } = req.params;
-            const { name, color, order } = req.body;
-            const stages = await collectionService.updateStage(acctId, collectionId, stageId, { name, color, order });
+            const { id, name, color, order } = req.body;
+            const stages = await collectionService.updateStage(acctId, collectionId, stageId, { id, name, color, order });
             return res.status(200).json({ success: true, message: 'Stage updated', data: stages });
         } catch (error) {
             console.error('[CollectionController] updateStage:', error);

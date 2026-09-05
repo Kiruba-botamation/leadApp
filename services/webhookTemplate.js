@@ -8,7 +8,7 @@
  *   { event, acctId, timestamp, data: { ...event-specific... } }
  *
  * so a template like
- *   { "name": "{{data.lead.name}}", "stage": {{data.stage.id}}, "src": "crm" }
+ *   { "name": "{{data.lead.name}}", "stage": "{{data.stage.id}}", "src": "crm" }
  * renders to a trimmed, receiver-specific payload.
  *
  * Rendering is type-safe: a value that is *exactly* one token (`"{{path}}"`)

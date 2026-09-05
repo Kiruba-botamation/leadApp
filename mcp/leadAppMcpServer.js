@@ -65,7 +65,7 @@ const TOOLS = [
     },
     {
         name: 'get_stages',
-        description: 'List the lead stages of a collection (id, name, colour). Use this to resolve a stage name like "hot" or "new" to its numeric stage id before calling get_lead_stats. Omit "collection" to use the account default collection.',
+        description: 'List the lead stages of a collection (id, name, colour). IDs may be numeric or alphanumeric. Use this to resolve a stage name before calling get_lead_stats.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -83,7 +83,7 @@ const TOOLS = [
             properties: {
                 acctId:      { type: 'string', description: 'The account id' },
                 collection:  { type: 'string', description: 'Optional collection name; defaults to the account default collection' },
-                stage:       { type: 'number', description: 'Optional numeric stage id' },
+                stage:       { type: ['string', 'number'], description: 'Optional numeric or alphanumeric stage id' },
                 stageName:   { type: 'string', description: 'Optional stage name (resolved to an id within the collection)' },
                 responsible: { type: 'string', description: 'Optional responsible admin userId' },
                 adminName:   { type: 'string', description: 'Optional admin name (resolved to a userId)' },
@@ -154,7 +154,7 @@ const toolHandlers = {
     async get_stages(args) {
         if (!args?.acctId) throw new Error('acctId is required');
         const collection = await resolveCollection(args.acctId, args.collection);
-        const stages = [...(collection.stages || [])].sort((a, b) => (a.order - b.order) || (a.id - b.id));
+        const stages = [...(collection.stages || [])].sort((a, b) => (a.order - b.order) || String(a.id).localeCompare(String(b.id)));
         return {
             collection: collection.collectionName,
             stages: stages.map(s => ({ id: s.id, name: s.name, color: s.color }))
@@ -170,7 +170,10 @@ const toolHandlers = {
         // ── Resolve stage (id directly, or by name within the collection) ──
         let stageId = null;
         if (args.stage !== undefined && args.stage !== null && args.stage !== '') {
-            stageId = Number(args.stage);
+            const key = String(args.stage).trim().toLowerCase();
+            const found = (collection.stages || []).find(stage => String(stage.id).toLowerCase() === key);
+            if (!found) throw new Error(`Stage ID "${args.stage}" not found in collection "${collection.collectionName}"`);
+            stageId = found.id;
         } else if (args.stageName) {
             const lower = String(args.stageName).toLowerCase();
             const found = (collection.stages || []).find(s => s.name.toLowerCase() === lower);
