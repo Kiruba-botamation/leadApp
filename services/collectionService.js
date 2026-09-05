@@ -176,16 +176,6 @@ export function normaliseCustomStageId(id) {
 
 export const resolveStageId = (stages, id) => stages.find(stage => stageIdKey(stage.id) === stageIdKey(id))?.id;
 
-export function generateStageId(name, stages = []) {
-    const baseId = String(name).replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 64) || 'STAGE';
-    let id = baseId;
-    let suffix = 2;
-    while (stages.some(stage => stageIdKey(stage.id) === stageIdKey(id))) {
-        id = `${baseId.slice(0, 64 - String(suffix).length)}${suffix++}`;
-    }
-    return id;
-}
-
 /** Normalise a collection name: lowercase, spaces → underscore, strip non-alphanumeric-underscore */
 export function normaliseCollectionName(name) {
     return name
@@ -236,6 +226,7 @@ class CollectionService {
             default:        collection.default,
             fields,
             stages:         sortStages(collection.stages),
+            nextStageId:    collection.nextStageId,
         };
     }
 
@@ -279,7 +270,8 @@ class CollectionService {
             collectionName: collection.collectionName,
             default:        collection.default,
             fields:         allFields,
-            stages:         sortStages(collection.stages)
+            stages:         sortStages(collection.stages),
+            nextStageId:    collection.nextStageId
         };
     }
 
@@ -331,7 +323,8 @@ class CollectionService {
             collectionName: collection.collectionName,
             default:        collection.default,
             fields:         allFields,
-            stages:         sortStages(collection.stages)
+            stages:         sortStages(collection.stages),
+            nextStageId:    collection.nextStageId
         };
     }
 
@@ -463,9 +456,16 @@ class CollectionService {
 
         let id;
         if (requestedId === undefined || requestedId === null || requestedId === '') {
-            id = generateStageId(trimmed, collection.stages);
+            id = Number.isSafeInteger(collection.nextStageId) ? collection.nextStageId : 1;
+            while (collection.stages.some(stage => stageIdKey(stage.id) === stageIdKey(id))) id += 1;
+            collection.nextStageId = id + 1;
         } else {
             id = normaliseCustomStageId(requestedId);
+            const numericId = Number(id);
+            const nextStageId = Number.isSafeInteger(collection.nextStageId) ? collection.nextStageId : 1;
+            if (Number.isSafeInteger(numericId) && numericId >= nextStageId) {
+                collection.nextStageId = numericId + 1;
+            }
         }
         this._assertStageIdUnique(collection.stages, id);
         const order = collection.stages.length
