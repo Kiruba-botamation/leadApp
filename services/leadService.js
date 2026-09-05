@@ -3,8 +3,10 @@ import LeadCollection from '../models/leadCollectionModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
 import LeadNote from '../models/leadNoteModel.js';
 import LeadReminder from '../models/leadReminderModel.js';
+import WebhookDelivery from '../models/webhookDeliveryModel.js';
 import { performUpsert } from '../config/mongoConnector.js';
 import { cancelReminderJobs } from '../queue/reminderQueue.js';
+import { removeWebhookJobs } from '../queue/webhookQueue.js';
 import collectionService, { SYSTEM_FIELDS, STAGE_FIELD } from './collectionService.js';
 import { emitEvent, EVENTS } from './eventBus.js';
 import {
@@ -490,22 +492,32 @@ class LeadService {
     /** Delete a lead by _id */
     async deleteLead(id, acctId) {
         if (!acctId) throw requestError('acctId is required');
-        while (true) {
-            const reminders = await LeadReminder.find({ acctId, leadId: id }, { _id: 1 })
-                .limit(200)
-                .maxTimeMS(LEAD_QUERY_MAX_TIME_MS)
-                .lean();
-            if (!reminders.length) break;
-            const reminderIds = reminders.map(reminder => reminder._id);
-            await LeadReminder.updateMany(
-                { acctId, leadId: id, _id: { $in: reminderIds } },
-                { $set: { mainSent: true, preReminderSent: true, clientSent: true, jobScheduled: false, clientJobScheduled: false } }
-            );
-            await Promise.allSettled(reminderIds.map(reminderId => cancelReminderJobs(reminderId)));
-            await LeadReminder.deleteMany({ acctId, leadId: id, _id: { $in: reminderIds } });
-        }
-        await LeadNote.deleteMany({ acctId, leadId: id });
+        const deleteDependents = async () => {
+            while (true) {
+                const reminders = await LeadReminder.find({ acctId, leadId: id }, { _id: 1 })
+                    .limit(200)
+                    .maxTimeMS(LEAD_QUERY_MAX_TIME_MS)
+                    .lean();
+                if (!reminders.length) break;
+                const reminderIds = reminders.map(reminder => reminder._id);
+                await LeadReminder.updateMany(
+                    { acctId, leadId: id, _id: { $in: reminderIds } },
+                    { $set: { mainSent: true, preReminderSent: true, clientSent: true, jobScheduled: false, clientJobScheduled: false } }
+                );
+                await Promise.allSettled(reminderIds.map(reminderId => cancelReminderJobs(reminderId)));
+                await LeadReminder.deleteMany({ acctId, leadId: id, _id: { $in: reminderIds } });
+            }
+            await LeadNote.deleteMany({ acctId, leadId: id });
+        };
+
+        await removeWebhookJobs({ acctId, leadIds: [id] });
+        await deleteDependents();
         const result = await Lead.deleteOne({ _id: id, acctId });
+        await deleteDependents();
+        await WebhookDelivery.deleteMany({
+            acctId,
+            $or: [{ leadId: id }, { 'payload.leadId': id }, { 'payload.data.leadId': id }]
+        });
         return result.deletedCount === 1;
     }
 

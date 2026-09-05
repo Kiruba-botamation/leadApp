@@ -5,7 +5,7 @@
  * (lead.created / lead.assigned / lead.unassigned) that matches an active
  * webhook config is enqueued here and delivered with retries + backoff.
  */
-import { addJob, createWorker, getQueueStats } from '../config/queueManager.js';
+import { addJob, createWorker, getQueue, getQueueStats } from '../config/queueManager.js';
 import { processor } from './webhookProcessor.js';
 import logger from '../utils/logger.js';
 
@@ -26,6 +26,23 @@ const JOB_OPTIONS = {
  */
 export const enqueueWebhook = (data) =>
     addJob(QUEUE_NAME, data.event, data, { ...JOB_OPTIONS });
+
+export const removeWebhookJobs = async ({ acctId, configIds = [], leadIds = [], allForAccount = false }) => {
+    const configSet = new Set(configIds.map(String));
+    const leadSet = new Set(leadIds.map(String));
+    if (!allForAccount && !configSet.size && !leadSet.size) return;
+    try {
+        const jobs = await getQueue(QUEUE_NAME).getJobs(['waiting', 'delayed', 'prioritized', 'failed', 'completed']);
+        const matches = jobs.filter(job => String(job.data?.acctId) === String(acctId) && (
+            allForAccount
+            || configSet.has(String(job.data?.configId))
+            || leadSet.has(String(job.data?.data?.leadId))
+        ));
+        await Promise.allSettled(matches.map(job => job.remove()));
+    } catch (error) {
+        logger.warn(`[WebhookQueue] Could not remove owned jobs | acctId=${acctId} | error=${error.message}`);
+    }
+};
 
 /** Start the webhook delivery worker. Call once on startup. */
 export const initializeWorker = () => {

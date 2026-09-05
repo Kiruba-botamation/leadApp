@@ -24,7 +24,7 @@
  * Default: each account can create/update at most 100 leads every 60 seconds.
  * A burst from one account never delays jobs belonging to another.
  */
-import { addJob, createWorker, getQueueStats } from '../config/queueManager.js';
+import { addJob, createWorker, getQueue, getQueueStats } from '../config/queueManager.js';
 import { eventType, processor } from './leadProcessor.js';
 import logger from '../utils/logger.js';
 
@@ -97,6 +97,17 @@ export const addToQueue = async (jobData, options = {}) => {
     { ...jobData, eventType },
     { ...JOB_OPTIONS, jobId, ...options }
   );
+};
+
+export const removeLeadJobs = async ({ acctId, collectionName = null }) => {
+  try {
+    const jobs = await getQueue(QUEUE_NAME).getJobs(['waiting', 'delayed', 'prioritized', 'failed', 'completed']);
+    const matches = jobs.filter(job => String(job.data?.acctId) === String(acctId)
+      && (!collectionName || job.data?.collection === collectionName));
+    await Promise.allSettled(matches.map(job => job.remove()));
+  } catch (error) {
+    logger.warn(`[LeadQueue] Could not remove owned jobs | acctId=${acctId} | error=${error.message}`);
+  }
 };
 
 /**

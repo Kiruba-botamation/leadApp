@@ -2,7 +2,12 @@ import LeadCollection from '../models/leadCollectionModel.js';
 import Lead from '../models/leadModel.js';
 import LeadNote from '../models/leadNoteModel.js';
 import LeadReminder from '../models/leadReminderModel.js';
+import LeadExport from '../models/leadExportModel.js';
+import AnalyticsSchema from '../models/analyticsSchemaModel.js';
+import WebhookConfig from '../models/webhookConfigModel.js';
+import WebhookDelivery from '../models/webhookDeliveryModel.js';
 import { cancelReminderJobs } from '../queue/reminderQueue.js';
+import { removeWebhookJobs } from '../queue/webhookQueue.js';
 import { performGet, perfomDataExistanceCheck, performCount } from '../config/mongoConnector.js';
 
 /**
@@ -101,6 +106,43 @@ async function deleteLeadDependents(acctId, leadIds) {
         // Drain the next bounded reminder batch.
     }
     await LeadNote.deleteMany({ acctId, leadId: { $in: leadIds } });
+}
+
+export function pruneCollectionAnalytics(schema, collectionId) {
+    if (!schema || typeof schema !== 'object' || !Array.isArray(schema.filters)) return schema;
+    const id = String(collectionId);
+    const filters = schema.filters.filter(chart => {
+        const chartCollection = chart?.chartCollection;
+        const chartCollectionId = chartCollection && typeof chartCollection === 'object'
+            ? chartCollection._id
+            : chartCollection;
+        return String(chartCollectionId || '') !== id;
+    });
+    return filters.length === schema.filters.length ? schema : { ...schema, filters };
+}
+
+async function deleteCollectionExports(acctId, collectionId) {
+    const exports = await LeadExport.find({ acctId, 'input.collectionId': collectionId }).lean();
+    if (!exports.length) return;
+    const [{ removeExportJobs }, { deleteStoredExport }] = await Promise.all([
+        import('../queue/exportQueue.js'),
+        import('./exportService.js')
+    ]);
+    for (const exportDoc of exports) {
+        await removeExportJobs(exportDoc).catch(() => {});
+        await deleteStoredExport(exportDoc).catch(() => {});
+    }
+    await LeadExport.deleteMany({ acctId, _id: { $in: exports.map(item => item._id) } });
+}
+
+async function deleteCollectionAnalytics(acctId, collectionId) {
+    const schemas = await AnalyticsSchema.find({ acctId }, { schema: 1 }).lean();
+    const operations = schemas.map(item => ({ item, schema: pruneCollectionAnalytics(item.schema, collectionId) }))
+        .filter(({ item, schema }) => schema !== item.schema)
+        .map(({ item, schema }) => ({
+            updateOne: { filter: { _id: item._id, acctId }, update: { $set: { schema } } }
+        }));
+    if (operations.length) await AnalyticsSchema.bulkWrite(operations);
 }
 
 /** Coerce a colour to a valid 6-digit hex, falling back to the default. */
@@ -296,6 +338,8 @@ class CollectionService {
         }
 
         let deletedLeads = 0;
+        const { removeLeadJobs } = await import('../queue/leadQueue.js');
+        await removeLeadJobs({ acctId, collectionName: collection.collectionName });
         while (true) {
             const leads = await Lead.find({ acctId, collectionId }, { _id: 1 })
                 .sort({ _id: 1 })
@@ -310,6 +354,18 @@ class CollectionService {
             // Catch dependents created after the first sweep but before lead removal.
             await deleteLeadDependents(acctId, leadIds);
         }
+
+        const webhookConfigs = await WebhookConfig.find({ acctId, collectionId }, { _id: 1 }).lean();
+        const webhookConfigIds = webhookConfigs.map(config => config._id);
+        await removeWebhookJobs({ acctId, configIds: webhookConfigIds });
+        await WebhookConfig.deleteMany({ acctId, collectionId });
+        await Promise.all([
+            WebhookDelivery.deleteMany({ acctId, configId: { $in: webhookConfigIds } }),
+            deleteCollectionExports(acctId, collectionId),
+            deleteCollectionAnalytics(acctId, collectionId)
+        ]);
+        // Catch a delivery worker that completed while its config was being removed.
+        await WebhookDelivery.deleteMany({ acctId, configId: { $in: webhookConfigIds } });
         await LeadCollection.deleteOne({ _id: collectionId, acctId });
 
         return {

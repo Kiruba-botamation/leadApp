@@ -6,6 +6,7 @@ import accountApiKeyModel from '../models/accountApiKeyModel.js';
 import UserAccount from '../models/userAccountModel.js';
 import AccountAdmin from '../models/accountAdminModel.js';
 import LeadCollection from '../models/leadCollectionModel.js';
+import Lead from '../models/leadModel.js';
 import LeadNote from '../models/leadNoteModel.js';
 import LeadReminder from '../models/leadReminderModel.js';
 import LeadExport from '../models/leadExportModel.js';
@@ -19,6 +20,7 @@ import logger from '../utils/logger.js';
 import collectionService from '../services/collectionService.js';
 import { deleteStoredExport } from '../services/exportService.js';
 import { cancelReminderJobs } from '../queue/reminderQueue.js';
+import { removeWebhookJobs } from '../queue/webhookQueue.js';
 
 /**
  * Check if the given email exists in the list of account admins.
@@ -587,6 +589,9 @@ export const deleteAccount = async (req, res) => {
         if (!acctId || !userId) {
             return res.status(400).json({ success: false, message: 'acctId and userId are required' });
         }
+        if (String(req.params.acctId) !== String(acctId)) {
+            return res.status(400).json({ success: false, message: 'Account path does not match verified account context' });
+        }
 
         if (req.user?.userId && userId !== req.user.userId) {
             return res.status(403).json({ success: false, message: 'Access denied: userId does not match authenticated user' });
@@ -604,12 +609,33 @@ export const deleteAccount = async (req, res) => {
             return res.status(404).json({ success: false, message: 'User is not linked to this account' });
         }
 
-        const exports = await LeadExport.find({ acctId, status: 'completed' }).lean();
-        for (const exportDoc of exports) await deleteStoredExport(exportDoc).catch(() => {});
+        // Revoke API access and queued writes before removing tenant data.
+        await accountApiKeyModel.deleteMany({ acctId });
+        const [{ removeExportJobs }, { removeLeadJobs }] = await Promise.all([
+            import('../queue/exportQueue.js'),
+            import('../queue/leadQueue.js')
+        ]);
+        await Promise.allSettled([
+            removeLeadJobs({ acctId }),
+            removeWebhookJobs({ acctId, allForAccount: true })
+        ]);
+
+        const exports = await LeadExport.find({ acctId }).lean();
+        for (const exportDoc of exports) {
+            await removeExportJobs(exportDoc).catch(() => {});
+            await deleteStoredExport(exportDoc).catch(() => {});
+        }
 
         const collections = await LeadCollection.find({ acctId }, { _id: 1 }).lean();
         for (const collection of collections) {
             await collectionService.deleteCollection(acctId, collection._id);
+        }
+
+        // Remove legacy/orphan leads that are not attached to an existing collection.
+        while (true) {
+            const leads = await Lead.find({ acctId }, { _id: 1 }).limit(200).lean();
+            if (!leads.length) break;
+            for (const lead of leads) await leadService.deleteLead(lead._id, acctId);
         }
 
         while (true) {
@@ -628,15 +654,13 @@ export const deleteAccount = async (req, res) => {
             AnalyticsSchema.deleteMany({ acctId }),
             WebhookConfig.deleteMany({ acctId }),
             WebhookDelivery.deleteMany({ acctId }),
+            Lead.deleteMany({ acctId }),
+            LeadCollection.deleteMany({ acctId }),
             UserAccount.deleteMany({ acctId }),
             AccountAdmin.deleteMany({ acctId })
         ]);
         invalidateAdminCache(userId, acctId);
         logger.info('Tenant data deleted', { acctId, userId, operation: 'deleteTenantData' });
-
-        // Delete API keys for this account
-        await accountApiKeyModel.deleteMany({ acctId });
-        logger.info('AccountApiKey deleted', { acctId, operation: 'deleteAccountApiKey' });
 
         // Delete the account itself
         await performDelete(acctDataModel, { _id: acctId });

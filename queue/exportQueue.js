@@ -28,6 +28,15 @@ export const cancelExport = async (exportDoc) => {
     }
 };
 
+export const removeExportJobs = async (exportDoc) => {
+    await cancelExport(exportDoc);
+    const queue = getQueue(QUEUE_NAME);
+    for (const jobId of [`export-${exportDoc._id}`, `cleanup-${exportDoc._id}`]) {
+        const job = await queue.getJob(jobId);
+        if (job && await job.getState() !== 'active') await job.remove().catch(() => {});
+    }
+};
+
 export const initializeWorker = () => {
     logger.info(`[ExportQueue] Starting worker | queue=${QUEUE_NAME} | concurrency=${concurrency}`);
     return createWorker(QUEUE_NAME, processor, { concurrency, limiter: undefined });

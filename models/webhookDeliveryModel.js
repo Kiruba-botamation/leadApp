@@ -22,6 +22,14 @@ const webhookDeliverySchema = new mongoose.Schema(
             type: String,
             required: true
         },
+        leadId: {
+            type: String,
+            default: null
+        },
+        collectionId: {
+            type: String,
+            default: null
+        },
         event: {
             type: String,
             required: true
@@ -57,6 +65,8 @@ const webhookDeliverySchema = new mongoose.Schema(
 
 // Recent deliveries for an account, latest first
 webhookDeliverySchema.index({ acctId: 1, createdAt: -1 });
+webhookDeliverySchema.index({ acctId: 1, configId: 1 });
+webhookDeliverySchema.index({ acctId: 1, leadId: 1 });
 
 const WebhookDelivery = mongoose.model('WebhookDelivery', webhookDeliverySchema);
 

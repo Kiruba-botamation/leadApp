@@ -225,7 +225,7 @@ export async function runExport(exportId) {
             const last = rows.at(-1);
             cursor = last ? { value: last[input.sortBy] ?? null, id: String(last._id) } : null;
             const state = await LeadExport.findByIdAndUpdate(exportId, { processedRows }, { new: true, projection: { cancelRequested: 1 } });
-            if (state?.cancelRequested) throw Object.assign(new Error('Export cancelled'), { cancelled: true });
+            if (!state || state.cancelRequested) throw Object.assign(new Error('Export cancelled'), { cancelled: true });
             if (rows.length < PAGE_SIZE) break;
         } while (cursor);
         const sizeBytes = await writer.close();

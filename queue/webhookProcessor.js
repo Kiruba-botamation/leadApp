@@ -27,7 +27,7 @@ const headersToObject = (headers) => {
 export const processor = async (job) => {
     const { configId, acctId, event, data } = job.data;
 
-    const config = await WebhookConfig.findById(configId).lean();
+    const config = await WebhookConfig.findOne({ _id: configId, acctId }).lean();
     if (!config || !config.active) {
         logger.info(`[WebhookProcessor] Config ${configId} missing/inactive — dropping delivery`);
         return;
@@ -63,29 +63,29 @@ export const processor = async (job) => {
 
         const ok = res.status >= 200 && res.status < 300;
         if (ok) {
-            await WebhookDelivery.create({
-                acctId, configId, event, payload: bodyObj,
-                status: 'success', statusCode: res.status, attempts: attemptNo, lastError: null
-            });
+            if (await WebhookConfig.exists({ _id: configId, acctId })) {
+                await WebhookDelivery.create({
+                    acctId, configId, leadId: data?.leadId || null, collectionId: config.collectionId, event, payload: bodyObj,
+                    status: 'success', statusCode: res.status, attempts: attemptNo, lastError: null
+                });
+            }
             logger.info(`[WebhookProcessor] Delivered ${event} to ${config.url} (${res.status})`);
             return;
         }
 
-        // Non-2xx — record only on the final attempt, then throw to retry/fail
-        if (isFinalAttempt) {
-            await WebhookDelivery.create({
-                acctId, configId, event, payload: bodyObj,
-                status: 'failed', statusCode: res.status, attempts: attemptNo, lastError: `HTTP ${res.status}`
-            });
-        }
-        throw new Error(`Webhook returned HTTP ${res.status}`);
+        const error = new Error(`Webhook returned HTTP ${res.status}`);
+        error.statusCode = res.status;
+        throw error;
     } catch (err) {
         // Network/timeout errors land here too — record on the final attempt
         if (isFinalAttempt) {
-            await WebhookDelivery.create({
-                acctId, configId, event, payload: bodyObj,
-                status: 'failed', statusCode: null, attempts: attemptNo, lastError: err.message
-            }).catch(() => { /* delivery-log write best-effort */ });
+            const configStillExists = await WebhookConfig.exists({ _id: configId, acctId }).catch(() => false);
+            if (configStillExists) {
+                await WebhookDelivery.create({
+                    acctId, configId, leadId: data?.leadId || null, collectionId: config.collectionId, event, payload: bodyObj,
+                    status: 'failed', statusCode: err.statusCode ?? null, attempts: attemptNo, lastError: err.message
+                }).catch(() => { /* delivery-log write best-effort */ });
+            }
         }
         throw err;
     }
