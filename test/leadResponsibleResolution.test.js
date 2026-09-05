@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveResponsibleUserIds } from '../services/leadService.js';
+import { applyResolvedResponsible, resolveResponsibleUserIds } from '../services/leadService.js';
 
 const admins = [
     { _id: 'admin-1', chatbotAdminId: 'chatbot-1', userId: 'user-1' },
@@ -36,4 +36,19 @@ test('responsible identifiers are trimmed before resolution', () => {
     const resolved = resolveResponsibleUserIds(admins, [' chatbot-2 ']);
 
     assert.equal(resolved.get('chatbot-2'), 'user-2');
+});
+
+test('create normalization leaves leads unassigned when the admin is unavailable', () => {
+    const items = [
+        { name: 'Assigned', responsible: 'chatbot-1' },
+        { name: 'Unavailable', responsible: 'missing-admin' },
+        { name: 'Already unassigned' }
+    ];
+    const resolved = resolveResponsibleUserIds(admins, ['chatbot-1', 'missing-admin']);
+
+    applyResolvedResponsible(items, resolved);
+
+    assert.equal(items[0].responsible, 'user-1');
+    assert.equal(Object.hasOwn(items[1], 'responsible'), false);
+    assert.equal(Object.hasOwn(items[2], 'responsible'), false);
 });

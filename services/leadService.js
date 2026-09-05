@@ -49,6 +49,18 @@ export function resolveResponsibleUserIds(admins, identifiers) {
     }));
 }
 
+export function applyResolvedResponsible(items, responsibleUserIds) {
+    for (const item of items) {
+        const id = identifierValue(item.responsible);
+        if (!id) continue;
+
+        const userId = responsibleUserIds.get(id);
+        if (userId) item.responsible = userId;
+        else delete item.responsible;
+    }
+    return items;
+}
+
 async function findResponsibleUserIds(acctId, identifiers) {
     const ids = [...new Set(identifiers.map(identifierValue).filter(Boolean))];
     if (!ids.length) return new Map();
@@ -133,18 +145,9 @@ class LeadService {
 
         const responsibleUserIds = await findResponsibleUserIds(acctId, [...responsibleIds]);
 
-        for (const item of items) {
-            if (hasIdentifier(item.responsible)) {
-                const id = identifierValue(item.responsible);
-                const userId = responsibleUserIds.get(id);
-                if (!userId) {
-                    const err = new Error(`No admin found for responsible identifier "${id}" in this account.`);
-                    err.statusCode = 400;
-                    throw err;
-                }
-                item.responsible = userId;
-            }
-        }
+        // Unknown admin identifiers must not reject lead ingestion. Store those
+        // leads without a responsible field so they enter the unassigned queue.
+        applyResolvedResponsible(items, responsibleUserIds);
 
         for (const item of items) {
             if (Object.keys(item).length > MAX_LEAD_FIELDS || Buffer.byteLength(JSON.stringify(item)) > MAX_LEAD_DOCUMENT_BYTES) {
