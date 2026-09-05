@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     ADMIN_FILTER_MAX,
     ADMIN_LIMIT_MAX,
+    buildAdminContactUpdate,
     escapeRegexLiteral,
     isAdminMissingFromPlatform,
     normaliseBotamationAdmin,
@@ -76,4 +77,12 @@ test('Botamation admin normalization supports generic id and full name fields', 
         phone: null,
         profileImage: 'https://example.com/grace.jpg'
     });
+});
+
+test('contact sync does not erase saved details with blank auth values', () => {
+    assert.deepEqual(buildAdminContactUpdate({ email: ' Admin@Example.com ', phone: '' }), {
+        email: 'Admin@Example.com',
+        emailNormalized: 'admin@example.com'
+    });
+    assert.deepEqual(buildAdminContactUpdate({ email: '', phone: '  ' }), {});
 });

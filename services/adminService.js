@@ -186,12 +186,21 @@ export const getAdminsFromDb = async (acctId, options = {}) => {
  * Only updates an existing record for {acctId, userId} — never creates one.
  * Returns the updated record, or null if the user isn't an admin of the account.
  */
-export const setAdminContact = async (acctId, userId, { email, phone }) => {
+export const buildAdminContactUpdate = ({ email, phone }) => {
     const fields = {};
-    if (email !== undefined) fields.email = email;
-    if (phone !== undefined) fields.phone = phone;
-    if (email !== undefined) fields.emailNormalized = typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
-    if (phone !== undefined) fields.phoneNormalized = typeof phone === 'string' && phone.trim() ? phone.trim().toLowerCase() : null;
+    if (typeof email === 'string' && email.trim()) {
+        fields.email = email.trim();
+        fields.emailNormalized = email.trim().toLowerCase();
+    }
+    if (typeof phone === 'string' && phone.trim()) {
+        fields.phone = phone.trim();
+        fields.phoneNormalized = phone.trim().toLowerCase();
+    }
+    return fields;
+};
+
+export const setAdminContact = async (acctId, userId, contact) => {
+    const fields = buildAdminContactUpdate(contact);
     if (Object.keys(fields).length === 0) return null;
     return AccountAdmin.findOneAndUpdate({ acctId, userId }, { $set: fields }, { new: true }).lean();
 };
